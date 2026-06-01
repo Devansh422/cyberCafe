@@ -1,0 +1,25 @@
+{
+  "name": "ratan-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 4500",
+    "build": "next build",
+    "build:export": "cross-env BUILD_EXPORT=1 NEXT_PUBLIC_API_BASE=http://127.0.0.1:5000 next build",
+    "start": "next start -p 4500",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "lucide-react": "^1.17.0",
+    "next": "14.2.15",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "swr": "^2.2.5"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13"
+  }
+}

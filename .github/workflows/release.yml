@@ -1,0 +1,65 @@
+name: release
+
+# Tag-driven release: push a tag like `v0.1.0` to build the Windows installer,
+# sign it, publish a GitHub Release, and emit the updater manifest (latest.json)
+# that installed copies poll via tauri-plugin-updater.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install frontend deps
+        run: npm --prefix frontend install
+
+      - name: Build & package the WhatsApp sidecar (.exe)
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: |
+          npm --prefix whatsapp-sidecar install
+          npm --prefix whatsapp-sidecar run package
+          if (-not (Test-Path dist/whatsapp-sidecar.exe)) { throw "sidecar exe not produced" }
+        shell: pwsh
+
+      - name: Fetch SumatraPDF print engine
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $ver = "3.5.2"
+          $url = "https://www.sumatrapdfreader.org/dl/rel/$ver/SumatraPDF-$ver-64.zip"
+          Invoke-WebRequest $url -OutFile sumatra.zip
+          Expand-Archive sumatra.zip -DestinationPath sumatra -Force
+          Copy-Item (Get-ChildItem sumatra -Filter *.exe)[0].FullName dist/SumatraPDF.exe -Force
+        shell: pwsh
+
+      - name: Build, sign & release (Tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Ratan ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false

@@ -1,0 +1,66 @@
+[package]
+name = "ratan-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Ratan print-automation backend (Rust port of the Express backend)"
+
+# Library used by both the standalone `ratan-server` bin and the Tauri app.
+[lib]
+name = "ratan_core"
+path = "src/lib.rs"
+
+# Standalone HTTP server for dev/testing against the existing Next.js frontend.
+[[bin]]
+name = "ratan-server"
+path = "src/main.rs"
+
+[dependencies]
+# --- async runtime + web ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "signal", "time", "sync"] }
+axum = { version = "0.7", features = ["multipart", "macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "fs", "limit"] }
+http = "1"
+bytes = "1"
+
+# --- serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- storage ---
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# --- hashing / ids / time ---
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# --- misc ---
+mime_guess = "2"
+dotenvy = "0.15"
+thiserror = "1"
+anyhow = "1"
+
+# --- logging ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- Phase 2: image + PDF + ONNX ---
+image = "0.25"
+kamadak-exif = "0.5"
+lopdf = "0.34"
+# ONNX Runtime for MODNet matting + UltraFace detection. `download-binaries`
+# fetches the prebuilt ORT 1.24 lib so no system install is needed.
+ort = { version = "=2.0.0-rc.12", features = ["download-binaries"] }
+
+# --- Phase 3: sidecar proxy ---
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[target.'cfg(windows)'.dependencies]
+# Used to spawn child processes (PowerShell, SumatraPDF, taskkill) with
+# CREATE_NO_WINDOW so no console window flashes — the win-exec.js behavior.
+# (std::os::windows::process::CommandExt::creation_flags is in std; no crate
+# needed, but winapi/windows can be added if richer Win32 calls are required.)

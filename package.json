@@ -1,0 +1,26 @@
+{
+  "name": "ratan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cyber Cafe Print Automation System - WhatsApp to Printer",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "install:all": "npm install && npm --prefix backend install && npm --prefix frontend install",
+    "build": "npm --prefix frontend run build",
+    "start": "concurrently -n backend,frontend -c blue,green \"npm --prefix backend start\" \"npm --prefix frontend start\"",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop all",
+    "pm2:restart": "pm2 restart all",
+    "pm2:status": "pm2 status",
+    "pm2:logs": "pm2 logs",
+    "deploy": "npm --prefix frontend run build && pm2 restart all --update-env",
+    "deploy:frontend": "npm --prefix frontend run build && pm2 restart ratan-frontend --update-env",
+    "deploy:backend": "pm2 restart ratan-backend --update-env"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "concurrently": "^9.0.1"
+  }
+}

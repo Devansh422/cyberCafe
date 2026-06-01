@@ -1,0 +1,23 @@
+# Cargo workspace for the Rust rewrite of the Ratan backend.
+#
+# `crates/ratan-core` is the backend library + a standalone `ratan-server` bin
+# (for dev/testing against the existing Next.js frontend). `src-tauri` (added in
+# Phase 4) wraps the same library into the desktop app, so it is listed here once
+# it exists.
+[workspace]
+resolver = "2"
+members = ["crates/ratan-core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Ratan"]
+
+[profile.release]
+# Smaller, faster binaries for the shipped installer.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

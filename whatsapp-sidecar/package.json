@@ -1,0 +1,23 @@
+{
+  "name": "ratan-whatsapp-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WhatsApp import sidecar for Ratan — drives whatsapp-web.js and reports to the Rust core",
+  "main": "server.js",
+  "bin": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "package": "pkg . --targets node24-win-x64 --output ../dist/whatsapp-sidecar.exe"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.0.0",
+    "qrcode": "^1.5.4",
+    "whatsapp-web.js": "^1.26.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.3.0"
+  },
+  "pkg": {
+    "assets": ["node_modules/whatsapp-web.js/**/*"]
+  }
+}

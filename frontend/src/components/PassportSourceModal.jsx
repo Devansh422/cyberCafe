@@ -1,0 +1,130 @@
+'use client';
+import { useEffect, useState } from 'react';
+import useSWR from 'swr';
+import { X, Check, MessageCircle } from 'lucide-react';
+import { api, fileUrl } from '@/lib/api';
+import { Avatar } from './Avatar';
+import { fmtDateShort } from '@/lib/format';
+
+// Picker for pulling passport source photos from WhatsApp incoming images.
+// Lists incoming image jobs as selectable thumbnails; confirming hands the
+// chosen job ids back to the Passport page, which runs MODNet on each.
+export function PassportSourceModal({ onClose, onConfirm }) {
+  const { data } = useSWR('/jobs?status=incoming&limit=500', api.fetcher, { refreshInterval: 5000 });
+  const images = (data?.jobs || []).filter((j) => j.type === 'image');
+
+  const [selected, setSelected] = useState(() => new Set());
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  function toggle(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function confirm() {
+    const ids = images.map((j) => j.id).filter((id) => selected.has(id));
+    if (!ids.length) return;
+    onConfirm?.(ids);
+  }
+
+  const count = selected.size;
+
+  return (
+    <div
+      onClick={() => onClose?.()}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: '3vh 3vw' }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="modal-enter flex flex-col"
+        style={{ background: 'var(--color-bg-surface)', borderRadius: 20, width: '84vw', height: '86vh', boxShadow: '0 24px 80px rgba(0,0,0,0.28)', overflow: 'hidden' }}
+      >
+        <div className="flex items-center gap-3" style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-border)' }}>
+          <span className="flex items-center justify-center rounded-pill" style={{ width: 32, height: 32, background: '#25D366', color: '#fff' }}>
+            <MessageCircle size={16} />
+          </span>
+          <div className="flex flex-col">
+            <h2 className="font-bold" style={{ fontSize: 17 }}>Add from WhatsApp</h2>
+            <span className="text-xs text-text-secondary">Pick incoming photos to turn into passport prints.</span>
+          </div>
+          <button
+            onClick={() => onClose?.()}
+            aria-label="close"
+            className="ml-auto flex items-center justify-center text-text-secondary hover:text-text-primary"
+            style={{ width: 34, height: 34, borderRadius: 999, background: 'var(--color-bg-overlay)', border: 'none', cursor: 'pointer' }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 20, background: 'var(--color-bg-app)' }}>
+          {images.length === 0 ? (
+            <div className="flex items-center justify-center text-sm text-text-secondary" style={{ height: '100%' }}>
+              No incoming WhatsApp photos right now.
+            </div>
+          ) : (
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
+              {images.map((job) => {
+                const sel = selected.has(job.id);
+                return (
+                  <button
+                    key={job.id}
+                    type="button"
+                    onClick={() => toggle(job.id)}
+                    className="text-left flex flex-col"
+                    style={{
+                      background: 'var(--color-bg-surface)',
+                      borderRadius: 12,
+                      border: sel ? '2px solid var(--color-brand)' : '1px solid var(--color-border)',
+                      boxShadow: sel ? '0 0 0 3px var(--color-tag-green-bg)' : 'var(--shadow-card)',
+                      overflow: 'hidden', cursor: 'pointer', position: 'relative',
+                    }}
+                  >
+                    <span
+                      className="flex items-center justify-center rounded-pill"
+                      style={{ position: 'absolute', top: 6, right: 6, width: 24, height: 24, background: sel ? 'var(--color-brand)' : 'rgba(255,255,255,0.85)', color: sel ? 'var(--color-brand-fg)' : 'transparent', border: '1px solid var(--color-border)' }}
+                    >
+                      <Check size={14} />
+                    </span>
+                    <div style={{ height: 150, background: 'var(--color-bg-overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={fileUrl(job.id)} alt={job.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-text-secondary" style={{ padding: '7px 9px' }}>
+                      <Avatar name={job.customer_name || job.customer_phone || '?'} size={18} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {job.customer_name || 'Unknown'}
+                      </span>
+                      <span className="ml-auto" style={{ whiteSpace: 'nowrap' }}>{fmtDateShort(job.created_at)}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3" style={{ padding: '14px 20px', borderTop: '1px solid var(--color-border)' }}>
+          <span className="text-sm font-medium">{count} selected</span>
+          <button
+            type="button"
+            onClick={confirm}
+            disabled={count < 1}
+            className="ml-auto flex items-center justify-center gap-2 text-sm font-semibold rounded-pill"
+            style={{ padding: '11px 22px', background: 'var(--color-brand)', color: 'var(--color-brand-fg)', border: 'none', cursor: count < 1 ? 'not-allowed' : 'pointer', opacity: count < 1 ? 0.6 : 1 }}
+          >
+            Add {count > 0 ? count : ''} photo{count === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

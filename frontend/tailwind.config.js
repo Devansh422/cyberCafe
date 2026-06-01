@@ -1,0 +1,61 @@
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ['./src/**/*.{js,ts,jsx,tsx,mdx}'],
+  theme: {
+    extend: {
+      colors: {
+        'bg-app': 'var(--color-bg-app)',
+        'bg-surface': 'var(--color-bg-surface)',
+        'bg-overlay': 'var(--color-bg-overlay)',
+        brand: 'var(--color-brand)',
+        'brand-fg': 'var(--color-brand-fg)',
+        'accent-green': 'var(--color-accent-green-bg)',
+        'accent-green-text': 'var(--color-accent-green-text)',
+        'tag-pink-bg': 'var(--color-tag-pink-bg)',
+        'tag-pink-text': 'var(--color-tag-pink-text)',
+        'tag-yellow-bg': 'var(--color-tag-yellow-bg)',
+        'tag-yellow-text': 'var(--color-tag-yellow-text)',
+        'tag-green-bg': 'var(--color-tag-green-bg)',
+        'tag-green-text': 'var(--color-tag-green-text)',
+        'dept-bg': 'var(--color-dept-bg)',
+        'dept-fg': 'var(--color-dept-fg)',
+        'text-primary': 'var(--color-text-primary)',
+        'text-secondary': 'var(--color-text-secondary)',
+        'text-muted': 'var(--color-text-muted)',
+        border: 'var(--color-border)',
+        'border-dashed': 'var(--color-border-dashed)',
+        'premium-bg': 'var(--color-premium-bg)',
+      },
+      fontFamily: {
+        sans: ['Plus Jakarta Sans', 'DM Sans', 'system-ui', 'sans-serif'],
+      },
+      fontSize: {
+        xs: ['11px', { lineHeight: '1.4' }],
+        sm: ['12px', { lineHeight: '1.4' }],
+        base: ['14px', { lineHeight: '1.4' }],
+        md: ['15px', { lineHeight: '1.4' }],
+        lg: ['18px', { lineHeight: '1.3' }],
+        xl: ['20px', { lineHeight: '1.3' }],
+        '2xl': ['28px', { lineHeight: '1.15' }],
+        '3xl': ['38px', { lineHeight: '1.05' }],
+      },
+      borderRadius: {
+        xs: '6px',
+        sm: '10px',
+        md: '16px',
+        lg: '20px',
+        pill: '999px',
+      },
+      boxShadow: {
+        card: '0 1px 4px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.04)',
+        'card-hover': '0 4px 16px rgba(0,0,0,0.10), 0 0 0 1px rgba(0,0,0,0.06)',
+        nav: '0 1px 0 rgba(0,0,0,0.06)',
+      },
+      spacing: {
+        1: '4px', 2: '8px', 3: '12px', 4: '16px', 5: '20px',
+        6: '24px', 7: '28px', 8: '32px', 10: '40px', 12: '48px',
+      },
+    },
+  },
+  plugins: [],
+};
