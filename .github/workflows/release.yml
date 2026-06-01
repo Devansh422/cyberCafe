@@ -30,6 +30,9 @@ jobs:
         with:
           node-version: 24
 
+      - name: Install root deps (Tauri CLI)
+        run: npm install
+
       - name: Install frontend deps
         run: npm --prefix frontend install
 
