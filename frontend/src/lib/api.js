@@ -27,6 +27,8 @@ export const api = {
   printJob: (id, opts = {}, signal) =>
     request(`/jobs/${id}/print`, { method: 'POST', body: JSON.stringify(opts), signal }),
   deleteJob: (id) => request(`/jobs/${id}`, { method: 'DELETE' }),
+  // Copy the job's file into the OS Downloads folder under a readable name.
+  saveJob: (id) => request(`/jobs/${id}/save`, { method: 'POST' }),
   clearJobs: (status) => request(`/jobs?status=${status}`, { method: 'DELETE' }),
   processBatch: (batchId, preset = 'scan_pdf', signal) =>
     request(`/jobs/batch/${batchId}/process`, { method: 'POST', body: JSON.stringify({ preset }), signal }),
@@ -38,6 +40,10 @@ export const api = {
   deleteBatch: (batchId) => request(`/jobs/batch/${batchId}`, { method: 'DELETE' }),
   mergeJobs: (ids, preset = 'scan_pdf') =>
     request('/jobs/merge', { method: 'POST', body: JSON.stringify({ ids, preset }) }),
+  // Compose two photos onto one A4 page (horizontal | vertical) for ID prints.
+  // items: [{ id, zoom, panX, panY }, …] (exactly 2).
+  makeCollage: (layout, items) =>
+    request('/jobs/collage', { method: 'POST', body: JSON.stringify({ layout, items }) }),
   health: () => request('/health'),
   status: () => request('/system/status'),
   qr: () => request('/system/whatsapp/qr'),

@@ -9,7 +9,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::db::jobs;
+use crate::db::{activity, jobs};
 use crate::error::{AppError, AppResult};
 use crate::media::{self, Incoming};
 use crate::print::{self, PrintOptions};
@@ -23,8 +23,10 @@ pub fn router() -> Router<SharedState> {
         .route("/counts", get(counts))
         .route("/upload", post(upload))
         .route("/merge", post(merge))
+        .route("/collage", post(collage))
         .route("/:id", get(get_one).delete(delete_one))
         .route("/:id/file", get(get_file))
+        .route("/:id/save", post(save_to_pc))
         .route("/:id/process", post(process))
         .route("/:id/print", post(print_job))
         .route("/batch/:batch_id/process", post(batch_process))
@@ -141,6 +143,21 @@ async fn process(State(st): State<SharedState>, Path(id): Path<i64>, body: Bytes
     Ok(Json(job))
 }
 
+/// Copy this job's file into the user's Downloads folder under a readable
+/// `{customer}_{date}_{original}` name. Returns the saved path so the UI can
+/// confirm it.
+async fn save_to_pc(State(st): State<SharedState>, Path(id): Path<i64>) -> AppResult<Json<Value>> {
+    let job = st.db.with(|c| jobs::get_job(c, id))?.ok_or(AppError::NotFound)?;
+    let saved = media::save_to_downloads(&st.config, &job)?;
+    st.db.with(|c| activity::log(c, Some(job.id), "saved", Some(&format!("Saved to {}", saved.path))));
+    Ok(Json(json!({
+        "ok": saved.ok,
+        "path": saved.path,
+        "filename": saved.filename,
+        "dir": saved.dir,
+    })))
+}
+
 async fn print_job(State(st): State<SharedState>, Path(id): Path<i64>, body: Bytes) -> AppResult<Json<Value>> {
     let job = st.db.with(|c| jobs::get_job(c, id))?.ok_or(AppError::NotFound)?;
     let opts: PrintOptions = parse_body(&body);
@@ -163,6 +180,43 @@ async fn merge(State(st): State<SharedState>, body: Bytes) -> AppResult<Response
     }
     let preset = b.preset.unwrap_or_else(|| "scan_pdf".to_string());
     let job = processing::merge_jobs_to_pdf(&st, &ids, &preset).await?;
+    Ok((StatusCode::CREATED, Json(job)).into_response())
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CollageItemBody {
+    id: i64,
+    zoom: Option<f32>,
+    #[serde(rename = "panX")]
+    pan_x: Option<f32>,
+    #[serde(rename = "panY")]
+    pan_y: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CollageBody {
+    #[serde(default)]
+    layout: String,
+    #[serde(default)]
+    items: Vec<CollageItemBody>,
+}
+
+async fn collage(State(st): State<SharedState>, body: Bytes) -> AppResult<Response> {
+    let b: CollageBody = parse_body(&body);
+    if b.items.len() != 2 {
+        return Err(AppError::bad("a collage needs exactly 2 photos"));
+    }
+    let items: Vec<processing::CollageItem> = b
+        .items
+        .iter()
+        .map(|it| processing::CollageItem {
+            id: it.id,
+            zoom: it.zoom.unwrap_or(1.0),
+            pan_x: it.pan_x.unwrap_or(0.0),
+            pan_y: it.pan_y.unwrap_or(0.0),
+        })
+        .collect();
+    let job = processing::make_collage(&st, &b.layout, &items).await?;
     Ok((StatusCode::CREATED, Json(job)).into_response())
 }
 

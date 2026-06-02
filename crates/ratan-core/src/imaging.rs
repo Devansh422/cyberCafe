@@ -9,10 +9,10 @@ use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
 
 /// A4 at 300 dpi (px) and in PDF points.
-const A4_W: u32 = 2480;
-const A4_H: u32 = 3508;
-const A4_PT_W: f64 = 595.28;
-const A4_PT_H: f64 = 841.89;
+pub const A4_W: u32 = 2480;
+pub const A4_H: u32 = 3508;
+pub const A4_PT_W: f64 = 595.28;
+pub const A4_PT_H: f64 = 841.89;
 
 #[derive(Clone, Copy)]
 pub struct Preset {

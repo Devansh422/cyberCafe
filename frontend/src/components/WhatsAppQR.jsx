@@ -1,6 +1,6 @@
 'use client';
 import useSWR from 'swr';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 
 const STATUS_TONE = {
@@ -50,6 +50,24 @@ export function WhatsAppStatus() {
     yellow: 'var(--color-tag-yellow-text)',
     pink: 'var(--color-tag-pink-text)',
   };
+  const fg = textMap[tone];
+
+  const linked = status === 'ready' || status === 'authenticated';
+  const connecting = starting || status === 'starting' || status === 'awaiting_qr' || status === 'logging_out';
+
+  // Fire the one-shot "linked!" celebration only on the transition into a
+  // connected state — not on every 3s poll that re-confirms it.
+  const prevStatus = useRef(status);
+  const [justLinked, setJustLinked] = useState(false);
+  useEffect(() => {
+    const wasLinked = prevStatus.current === 'ready' || prevStatus.current === 'authenticated';
+    prevStatus.current = status;
+    if (linked && !wasLinked) {
+      setJustLinked(true);
+      const t = setTimeout(() => setJustLinked(false), 2600);
+      return () => clearTimeout(t);
+    }
+  }, [status, linked]);
 
   async function start() {
     setStarting(true);
@@ -81,14 +99,34 @@ export function WhatsAppStatus() {
       >
         <span
           style={{
-            width: 8,
-            height: 8,
-            borderRadius: 999,
-            background: textMap[tone],
-            display: 'inline-block',
+            position: 'relative',
+            width: 14,
+            height: 14,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
-        />
-        WhatsApp · {label}
+        >
+          {linked ? (
+            <span
+              className={justLinked ? 'wa-pop' : undefined}
+              style={{ position: 'relative', width: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              {justLinked && <span className="wa-burst" style={{ border: `2px solid ${fg}` }} />}
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={fg} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                <path className={justLinked ? 'check-draw' : undefined} d="M5 13l4 4L19 7" />
+              </svg>
+            </span>
+          ) : connecting ? (
+            <>
+              <span className="wa-ripple" style={{ border: `1.5px solid ${fg}` }} />
+              <span className="wa-breathe" style={{ width: 8, height: 8, borderRadius: 999, background: fg }} />
+            </>
+          ) : (
+            <span style={{ width: 8, height: 8, borderRadius: 999, background: fg, display: 'inline-block' }} />
+          )}
+        </span>
+        WhatsApp · {justLinked ? 'Linked!' : label}
       </button>
 
       {open && (
@@ -115,12 +153,12 @@ export function WhatsAppStatus() {
               <button onClick={() => setOpen(false)} aria-label="close" className="text-text-secondary">✕</button>
             </div>
             <div className="text-sm text-text-secondary">Status: {label}</div>
-            {data?.qr ? (
+            {data?.qr && !linked ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={data.qr} alt="WhatsApp QR" style={{ width: '100%', borderRadius: 12 }} />
             ) : (
               <div
-                className="flex items-center justify-center text-sm text-text-secondary"
+                className="flex flex-col items-center justify-center gap-3 text-sm text-text-secondary"
                 style={{
                   background: 'var(--color-bg-overlay)',
                   borderRadius: 12,
@@ -129,11 +167,33 @@ export function WhatsAppStatus() {
                   padding: 20,
                 }}
               >
-                {status === 'ready'
-                  ? 'WhatsApp is connected. Files sent to your number will appear in Incoming.'
-                  : status === 'unavailable'
-                  ? 'Run "npm install" in /backend to enable WhatsApp import.'
-                  : 'Waiting for QR…'}
+                {linked ? (
+                  <>
+                    <span
+                      className={justLinked ? 'wa-pop' : undefined}
+                      style={{ position: 'relative', width: 64, height: 64, borderRadius: 999, background: 'var(--color-tag-green-bg)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      {justLinked && <span className="wa-burst" style={{ border: '2px solid var(--color-tag-green-text)' }} />}
+                      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="var(--color-tag-green-text)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path className={justLinked ? 'check-draw' : undefined} d="M5 13l4 4L19 7" />
+                      </svg>
+                    </span>
+                    <span>WhatsApp is connected. Files sent to your number will appear in Incoming.</span>
+                  </>
+                ) : status === 'unavailable' ? (
+                  <span>Run &quot;npm install&quot; in /backend to enable WhatsApp import.</span>
+                ) : connecting ? (
+                  <>
+                    <span style={{ position: 'relative', width: 56, height: 56, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <span className="wa-ripple" style={{ border: '2px solid var(--color-tag-yellow-text)' }} />
+                      <span className="wa-ripple" style={{ border: '2px solid var(--color-tag-yellow-text)', animationDelay: '0.7s' }} />
+                      <span className="wa-breathe" style={{ width: 16, height: 16, borderRadius: 999, background: 'var(--color-tag-yellow-text)' }} />
+                    </span>
+                    <span>{label} — connecting to WhatsApp…</span>
+                  </>
+                ) : (
+                  <span>Waiting for QR…</span>
+                )}
               </div>
             )}
             {data?.lastError && (

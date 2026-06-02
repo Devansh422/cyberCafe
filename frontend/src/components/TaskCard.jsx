@@ -1,7 +1,7 @@
 
 'use client';
 import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, ArrowRight } from 'lucide-react';
 import { Avatar } from './Avatar';
 import { DeptTag, DateBadge } from './Tags';
 import { StatusTimeline } from './StatusTimeline';
@@ -57,6 +57,11 @@ export function TaskCard({
   const nextLabel = nextStepLabel(activeKey);
   const statusLabel = STATUS_LABEL[activeKey] || STATUS_LABEL[job.status] || activeKey;
   const canDelete = showDelete;
+  const statusColor = failed
+    ? 'var(--color-tag-pink-text)'
+    : completed
+    ? 'var(--color-tag-green-text)'
+    : 'var(--color-text-primary)';
   const background = completed
     ? 'var(--color-accent-green-bg)'
     : failed
@@ -74,11 +79,12 @@ export function TaskCard({
         boxShadow: selected
           ? '0 4px 16px rgba(0,0,0,0.12), 0 0 0 2px #111'
           : 'var(--shadow-card)',
-        padding: isList ? 14 : 16,
-        minHeight: isList ? 96 : 168,
+        padding: 16,
+        minHeight: isList ? 158 : 168,
         cursor: 'pointer',
-        flexDirection: isList ? 'row' : 'column',
-        gap: isList ? 16 : 12,
+        flexDirection: 'column',
+        justifyContent: isList ? 'space-between' : undefined,
+        gap: isList ? 10 : 12,
         border: isList ? '1px solid var(--color-border)' : 'none',
       }}
       onMouseEnter={(e) => {
@@ -91,80 +97,109 @@ export function TaskCard({
       }}
     >
       {isList ? (
-        <div
-          className="w-full"
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr) auto',
-            gap: 16,
-            alignItems: 'center',
-          }}
-        >
-          <div className="flex flex-col gap-2 min-w-0">
-            <div
-              className="font-semibold"
-              style={{
-                fontSize: 15,
-                color: 'var(--color-text-primary)',
-                lineHeight: 1.5,
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-                wordBreak: 'break-word',
-              }}
-            >
-              {job.original_name || job.filename}
+        <>
+          {/* Top: profile + phone (left) · date pill, delete, filename (right) */}
+          <div className="w-full flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Avatar name={job.customer_name || job.customer_phone || '?'} size={38} />
+              <div className="flex flex-col min-w-0">
+                <span
+                  className="font-semibold"
+                  style={{
+                    fontSize: 14,
+                    lineHeight: 1.3,
+                    color: 'var(--color-text-primary)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {job.customer_phone || job.customer_name || 'Unknown'}
+                </span>
+                {job.customer_name && job.customer_phone && (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: 'var(--color-text-secondary)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {job.customer_name}
+                  </span>
+                )}
+              </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-4">
-              <StatusTimeline status={job.status} currentKey={activeKey} showQueued={showQueued} />
-              <span className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-                Next: {nextLabel}
+            <div className="flex flex-col items-end gap-1.5" style={{ flexShrink: 0, maxWidth: '55%' }}>
+              <div className="flex items-center gap-2">
+                <DateBadge tone={tone}>{fmtDateShort(job.created_at)}</DateBadge>
+                {canDelete && (
+                  <button
+                    type="button"
+                    aria-label="Delete file"
+                    title="Delete"
+                    disabled={deleting}
+                    onClick={handleDelete}
+                    className="flex items-center justify-center"
+                    style={{
+                      color: 'var(--color-tag-pink-text)',
+                      background: 'var(--color-tag-pink-bg)',
+                      border: '1px solid var(--color-tag-pink-text)',
+                      borderRadius: 999,
+                      width: 26,
+                      height: 26,
+                      flexShrink: 0,
+                      cursor: deleting ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {deleting ? <Spinner size={12} /> : <Trash2 size={13} />}
+                  </button>
+                )}
+              </div>
+              <span
+                title={job.original_name || job.filename}
+                style={{
+                  fontSize: 11,
+                  color: 'var(--color-text-secondary)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  textAlign: 'right',
+                  maxWidth: '100%',
+                }}
+              >
+                {job.original_name || job.filename}
               </span>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-2" style={{ textAlign: 'right', minWidth: 180 }}>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <DeptTag icon>{TYPE_LABEL[job.type] || 'FILE'}</DeptTag>
-              <DateBadge tone={tone}>{fmtDateShort(job.created_at)}</DateBadge>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="flex flex-col items-end">
-                <span className="text-xs font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-                  {job.customer_name || job.customer_phone || 'Unknown'}
-                </span>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-                    {statusLabel}
-                  </span>
-                  {canDelete && (
-                    <button
-                      type="button"
-                      aria-label="Delete file"
-                      title="Delete"
-                      disabled={deleting}
-                      onClick={handleDelete}
-                      className="flex items-center justify-center"
-                      style={{
-                        color: 'var(--color-tag-pink-text)',
-                        background: 'var(--color-tag-pink-bg)',
-                        border: '1px solid var(--color-tag-pink-text)',
-                        borderRadius: 999,
-                        width: 26,
-                        height: 26,
-                        cursor: deleting ? 'not-allowed' : 'pointer',
-                      }}
-                    >
-                      {deleting ? <Spinner size={12} /> : <Trash2 size={13} />}
-                    </button>
-                  )}
-                </div>
-              </div>
-              <Avatar name={job.customer_name || job.customer_phone || '?'} size={32} />
+
+          {/* Center: live status — tick markers for done/current, cross for failed */}
+          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: statusColor }}>{statusLabel}</span>
+            <div style={{ width: '100%' }}>
+              <StatusTimeline status={job.status} currentKey={activeKey} showQueued={showQueued} />
             </div>
           </div>
-        </div>
+
+          {/* Bottom: next step (left) · file-type pill (right) */}
+          <div className="w-full flex items-center justify-between gap-3">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-pill"
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: '4px 10px',
+                background: 'var(--color-bg-overlay)',
+                color: 'var(--color-text-secondary)',
+              }}
+            >
+              <ArrowRight size={12} /> Next: {nextLabel}
+            </span>
+            <DeptTag icon>{TYPE_LABEL[job.type] || 'FILE'}</DeptTag>
+          </div>
+        </>
       ) : (
         <>
           <div className="flex items-center justify-between">

@@ -58,15 +58,6 @@ export function TopNav() {
         <CheckUpdatesButton />
         <NetworkStatus />
         <WhatsAppStatus />
-        <div className="flex items-center gap-2">
-          <div
-            className="rounded-pill bg-brand text-brand-fg flex items-center justify-center text-xs font-bold"
-            style={{ width: 32, height: 32 }}
-          >
-            OP
-          </div>
-          <span className="text-sm font-medium">Operator</span>
-        </div>
       </div>
     </header>
   );

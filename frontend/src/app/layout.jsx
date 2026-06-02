@@ -19,7 +19,9 @@ export default function RootLayout({ children }) {
               display: 'grid',
               gridTemplateColumns: '1fr 320px',
               gridTemplateRows: 'auto 1fr',
-              minHeight: '100vh',
+              height: '100vh',
+              maxWidth: '100vw',
+              overflow: 'hidden',
               background: 'var(--color-bg-app)',
             }}
           >
@@ -29,7 +31,9 @@ export default function RootLayout({ children }) {
             <main
               style={{
                 padding: 24,
+                minWidth: 0,
                 overflowY: 'auto',
+                overflowX: 'hidden',
                 height: 'calc(100vh - 56px)',
               }}
             >

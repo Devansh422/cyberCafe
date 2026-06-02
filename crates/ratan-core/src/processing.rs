@@ -184,6 +184,154 @@ pub async fn merge_jobs_to_pdf(state: &SharedState, ids: &[i64], preset: &str) -
     job.ok_or_else(|| AppError::internal("merge job vanished"))
 }
 
+// ---- Collage (2-photo ID-print sheet) --------------------------------------
+
+/// One photo's placement in the collage. `zoom` multiplies the contain-fit
+/// scale (1.0 = whole photo visible); `pan_x`/`pan_y` shift it within its cell
+/// as a fraction of half the cell (0 = centered, ±1 = shifted by half a cell).
+pub struct CollageItem {
+    pub id: i64,
+    pub zoom: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
+}
+
+/// Cell rectangles as page fractions [x, y, w, h] (top-down origin). MUST stay
+/// in sync with `COLLAGE_CELLS` in the frontend so the preview matches output.
+fn collage_cells(layout: &str) -> [[f64; 4]; 2] {
+    match layout {
+        "horizontal" => [[0.05, 0.06, 0.43, 0.88], [0.52, 0.06, 0.43, 0.88]],
+        // "vertical" (default): stacked top/bottom — the usual ID front/back sheet.
+        _ => [[0.06, 0.05, 0.88, 0.42], [0.06, 0.53, 0.88, 0.42]],
+    }
+}
+
+/// Compose the two oriented photos onto a single white A4 page per `layout`,
+/// honoring each photo's zoom/pan, and return the page as a one-page PDF with
+/// light cut-guides around each cell.
+fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, f32, f32, f32)>) -> anyhow::Result<Vec<u8>> {
+    use image::imageops::{overlay, resize, FilterType};
+    use image::{GenericImageView, Rgb, RgbImage};
+
+    let (aw, ah) = (imaging::A4_W, imaging::A4_H);
+    let mut canvas = RgbImage::from_pixel(aw, ah, Rgb([255, 255, 255]));
+    let cells = collage_cells(layout);
+    let mut guides = Vec::new();
+
+    for (i, (img, zoom, pan_x, pan_y)) in items.into_iter().enumerate() {
+        let [fx, fy, fw, fh] = cells[i];
+        let cw = (fw * aw as f64).round().max(1.0) as u32;
+        let ch = (fh * ah as f64).round().max(1.0) as u32;
+        let cx = (fx * aw as f64).round() as i64;
+        let cy = (fy * ah as f64).round() as i64;
+
+        let (iw, ih) = img.dimensions();
+        let s_contain = (cw as f32 / iw as f32).min(ch as f32 / ih as f32);
+        let scale = (s_contain * zoom).max(0.001);
+        let sw = ((iw as f32 * scale).round() as u32).max(1);
+        let sh = ((ih as f32 * scale).round() as u32).max(1);
+        let scaled = resize(&img.to_rgb8(), sw, sh, FilterType::Lanczos3);
+
+        // Center the scaled photo in its cell, then apply the pan, and overlay
+        // onto a per-cell canvas so anything outside the cell is clipped.
+        let mut cell = RgbImage::from_pixel(cw, ch, Rgb([255, 255, 255]));
+        let dx = ((cw as f32 - sw as f32) / 2.0 + pan_x * (cw as f32 / 2.0)).round() as i64;
+        let dy = ((ch as f32 - sh as f32) / 2.0 + pan_y * (ch as f32 / 2.0)).round() as i64;
+        overlay(&mut cell, &scaled, dx, dy);
+        overlay(&mut canvas, &cell, cx, cy);
+
+        // Cut guide in PDF points (origin bottom-left, so flip y).
+        guides.push(crate::pdf::Guide {
+            x: fx * imaging::A4_PT_W,
+            y: (1.0 - (fy + fh)) * imaging::A4_PT_H,
+            w: fw * imaging::A4_PT_W,
+            h: fh * imaging::A4_PT_H,
+        });
+    }
+
+    crate::pdf::image_page(&canvas.into_raw(), aw, ah, imaging::A4_PT_W, imaging::A4_PT_H, &guides)
+}
+
+/// Build a 2-photo collage (horizontal or vertical) and register it as a new
+/// processed PDF job, ready to print or save — for double-sided ID prints.
+pub async fn make_collage(state: &SharedState, layout: &str, items: &[CollageItem]) -> AppResult<Job> {
+    if items.len() != 2 {
+        return Err(AppError::bad("a collage needs exactly 2 photos"));
+    }
+
+    let mut loaded: Vec<(image::DynamicImage, f32, f32, f32)> = Vec::new();
+    let mut first_name = None;
+    let mut first_phone = None;
+    for (idx, it) in items.iter().enumerate() {
+        let job = state
+            .db
+            .with(|c| jobs::get_job(c, it.id))?
+            .ok_or_else(|| AppError::bad(format!("photo #{} not found", it.id)))?;
+        if job.job_type.as_deref() != Some("image") {
+            return Err(AppError::bad("collage items must be photos (images)"));
+        }
+        let src = media::absolute_path(&state.config, &job.storage_folder, &job.filename);
+        if !src.exists() {
+            return Err(AppError::internal(format!("source missing: {}", src.display())));
+        }
+        let bytes = std::fs::read(&src)?;
+        let img = imaging::load_oriented(&bytes).map_err(|e| AppError::internal(e.to_string()))?;
+        if idx == 0 {
+            first_name = job.customer_name.clone();
+            first_phone = job.customer_phone.clone();
+        }
+        loaded.push((img, it.zoom, it.pan_x, it.pan_y));
+    }
+
+    let layout_owned = if layout == "horizontal" { "horizontal".to_string() } else { "vertical".to_string() };
+    let layout_for_blocking = layout_owned.clone();
+    let pdf_bytes = tokio::task::spawn_blocking(move || compose_collage(&layout_for_blocking, loaded))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))??;
+
+    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let dest_name = format!("collage_{ts}_{layout_owned}.pdf");
+    let dest_dir = state.config.folder_path("processed");
+    std::fs::create_dir_all(&dest_dir)?;
+    let dest = dest_dir.join(&dest_name);
+    std::fs::write(&dest, &pdf_bytes)?;
+
+    let size = pdf_bytes.len() as i64;
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    let job = state.db.with(|c| -> rusqlite::Result<Option<Job>> {
+        let created = jobs::create_job(
+            c,
+            &jobs::NewJob {
+                filename: dest_name.clone(),
+                original_name: Some(format!("Collage ({layout_owned})")),
+                job_type: Some("pdf".into()),
+                mime_type: Some("application/pdf".into()),
+                size: Some(size),
+                customer_name: first_name,
+                customer_phone: first_phone,
+                status: Some("processed".into()),
+                source: Some("collage".into()),
+                storage_folder: "processed".into(),
+                batch_id: Some(batch_id.clone()),
+                ..Default::default()
+            },
+        )?;
+        let updated = jobs::update_job(
+            c,
+            created.id,
+            &jobs::JobPatch {
+                processed_path: Some(dest.to_string_lossy().to_string()),
+                preset: Some("collage".into()),
+                pages: Some(1),
+                ..Default::default()
+            },
+        )?;
+        activity::log(c, updated.as_ref().map(|j| j.id), "collage_created", Some(&format!("2-photo {layout_owned} collage → {dest_name}")));
+        Ok(updated)
+    })?;
+    job.ok_or_else(|| AppError::internal("collage job vanished"))
+}
+
 // ---- Print engine (SumatraPDF) ---------------------------------------------
 
 /// Locate the bundled SumatraPDF binary in the resource dir.

@@ -46,6 +46,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("[ratan-core] listening on http://localhost:{port}");
+    tracing::info!("[ratan-core] db: {}", state.config.db_path.display());
     tracing::info!("[ratan-core] media root: {}", state.config.media_root.display());
     axum::serve(listener, app).await?;
     Ok(())

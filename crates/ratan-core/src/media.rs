@@ -210,3 +210,112 @@ pub fn delete_job_files(config: &Config, job: &jobs::Job) {
         let _ = std::fs::remove_file(pp);
     }
 }
+
+#[derive(Debug, Serialize)]
+pub struct SavedFile {
+    pub ok: bool,
+    pub path: String,
+    pub filename: String,
+    pub dir: String,
+}
+
+/// Turn one segment (a name, phone, or original-filename stem) into a readable,
+/// filesystem-safe slug: alphanumerics kept, every other run collapsed to a
+/// single `-`. e.g. "Rahul  Kumar!" -> "Rahul-Kumar".
+fn slug_segment(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_sep = false;
+    for ch in s.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            prev_sep = false;
+        } else if !prev_sep && !out.is_empty() {
+            out.push('-');
+            prev_sep = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out.chars().take(40).collect()
+}
+
+/// The file's received date as `YYYY-MM-DD` in local time. `created_at` is
+/// SQLite UTC text; fall back to today if it can't be parsed.
+fn date_slug(created_at: Option<&str>) -> String {
+    if let Some(ts) = created_at {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+            return dt.and_utc().with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+        }
+        if ts.len() >= 10 && ts.is_char_boundary(10) {
+            return ts[..10].replace(['/', '_'], "-");
+        }
+    }
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Copy a job's best available file (the processed render if present, else the
+/// original) into the user's Downloads folder under the
+/// `{customer}_{date}_{original}` template, avoiding overwrites.
+pub fn save_to_downloads(config: &Config, job: &jobs::Job) -> AppResult<SavedFile> {
+    // Prefer the processed render (e.g. the A4 PDF) when it exists on disk.
+    let source = job
+        .processed_path
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| absolute_path(config, &job.storage_folder, &job.filename));
+    if !source.exists() {
+        return Err(crate::error::AppError::NotFound);
+    }
+
+    let customer = job
+        .customer_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or(job.customer_phone.as_deref())
+        .unwrap_or("unknown");
+    let cust = {
+        let s = slug_segment(customer);
+        if s.is_empty() { "unknown".to_string() } else { s }
+    };
+
+    let orig = job.original_name.as_deref().filter(|s| !s.is_empty()).unwrap_or(&job.filename);
+    let stem = std::path::Path::new(orig)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let orig_slug = {
+        let s = slug_segment(stem);
+        if s.is_empty() { "file".to_string() } else { s }
+    };
+
+    let date = date_slug(job.created_at.as_deref());
+    let ext = config::ext_of(&source);
+    let base = format!("{cust}_{date}_{orig_slug}");
+
+    let downloads = dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+        .unwrap_or_else(|| config.media_root.clone());
+    std::fs::create_dir_all(&downloads)?;
+
+    // Never clobber an existing file — append " (2)", " (3)", … like Explorer.
+    let mut filename = format!("{base}.{ext}");
+    let mut target = downloads.join(&filename);
+    let mut n = 2;
+    while target.exists() {
+        filename = format!("{base} ({n}).{ext}");
+        target = downloads.join(&filename);
+        n += 1;
+    }
+
+    std::fs::copy(&source, &target)?;
+
+    Ok(SavedFile {
+        ok: true,
+        path: target.to_string_lossy().to_string(),
+        filename,
+        dir: downloads.to_string_lossy().to_string(),
+    })
+}

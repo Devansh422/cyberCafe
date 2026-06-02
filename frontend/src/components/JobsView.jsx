@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import useSWR from 'swr';
-import { Trash2, Layers } from 'lucide-react';
+import { Trash2, Layers, Images } from 'lucide-react';
 import { api } from '@/lib/api';
 import { SectionHeader } from './SectionHeader';
 import { TaskCard } from './TaskCard';
@@ -10,6 +10,7 @@ import { QuickPreview } from './QuickPreview';
 import { ProcessModal } from './ProcessModal';
 import { BatchProcessModal } from './BatchProcessModal';
 import { CreateBatchModal } from './CreateBatchModal';
+import { CollageModal } from './CollageModal';
 import { UploadDialog } from './UploadDialog';
 import { Spinner } from './Spinner';
 
@@ -50,6 +51,8 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
   const [batchTarget, setBatchTarget] = useState(null);
   // Whether the "Create batch" picker is open (Processed tab only).
   const [batchOpen, setBatchOpen] = useState(false);
+  // Whether the 2-photo collage builder is open.
+  const [collageOpen, setCollageOpen] = useState(false);
 
   const jobs = data?.jobs || [];
   const counts = data?.counts || {};
@@ -118,8 +121,25 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
   const hasClear = CLEARABLE.has(status) && jobs.length > 0;
   const hasUpload = !showHeader && showAdd;
   const hasCreateBatch = status === 'processed' && jobs.length >= 2;
-  const listActions = (hasClear || hasUpload || hasCreateBatch) ? (
+  const hasCollage = jobs.filter((j) => j.type === 'image').length >= 2;
+  const listActions = (hasClear || hasUpload || hasCreateBatch || hasCollage) ? (
     <div className="flex items-center gap-2">
+      {hasCollage && (
+        <button
+          type="button"
+          onClick={() => setCollageOpen(true)}
+          className="flex items-center gap-1.5 text-xs font-semibold rounded-pill"
+          style={{
+            padding: '5px 12px',
+            background: 'var(--color-bg-overlay)',
+            color: 'var(--color-text-primary)',
+            border: '1px solid var(--color-border)',
+            cursor: 'pointer',
+          }}
+        >
+          <Images size={13} /> Collage
+        </button>
+      )}
       {hasCreateBatch && (
         <button
           type="button"
@@ -177,7 +197,7 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
       <div className="grid gap-6" style={{ gridTemplateColumns: '1fr 1.4fr', minHeight: 0, height: '100%' }}>
         <section
           className="section-enter flex flex-col gap-3"
-          style={{ minHeight: 0, overflowY: 'auto', paddingRight: 4 }}
+          style={{ minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: 4 }}
         >
           <SectionHeader title={title} count={totalForSection} actions={listActions} />
           <div className="flex flex-wrap gap-2 text-xs text-text-secondary">
@@ -210,7 +230,7 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
               No files in this view yet.
             </div>
           ) : (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2" style={{ padding: 4 }}>
               {renderList.map((item) =>
                 item.kind === 'batch' ? (
                   <BatchCard
@@ -241,7 +261,7 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
 
         <section
           className="section-enter flex flex-col gap-2"
-          style={{ minHeight: 0, overflowY: 'auto', paddingRight: 4 }}
+          style={{ minHeight: 0, overflowY: 'auto', padding: 4 }}
         >
           <SectionHeader title="Preview" compact />
           <QuickPreview job={selected} onProcess={openProcess} onDelete={handleDelete} />
@@ -271,6 +291,14 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
         <CreateBatchModal
           onClose={() => setBatchOpen(false)}
           onCreated={handleMerged}
+        />
+      )}
+
+      {collageOpen && (
+        <CollageModal
+          jobs={jobs}
+          onClose={() => setCollageOpen(false)}
+          onCreated={(job) => { setCollageOpen(false); handleMerged(job); }}
         />
       )}
     </div>

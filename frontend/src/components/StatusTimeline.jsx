@@ -25,14 +25,33 @@ function getSteps({ status, currentKey, showQueued }) {
   return { steps, activeIndex };
 }
 
+// Small white tick / cross drawn inside the solid step markers.
+function Tick({ size }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function Cross({ size }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
+}
+
 export function StatusTimeline({ status, currentKey, showQueued = false, compact = false }) {
   if (!status && !currentKey) return null;
 
   const { steps, activeIndex } = getSteps({ status, currentKey, showQueued });
   const resolvedIndex = activeIndex >= 0 ? activeIndex : 0;
-  const dotSize = compact ? 6 : 8;
+  const markerSize = compact ? 14 : 18;
+  const iconSize = compact ? 9 : 11;
+  const futureDot = compact ? 6 : 7;
   const labelSize = compact ? 9 : 11;
-  const pulseSize = compact ? 14 : 18;
+  const pulseSize = markerSize + 8;
   const showPulse = !compact;
   const stepCount = steps.length;
   const edgePct = stepCount > 1 ? 100 / (stepCount * 2) : 0;
@@ -47,10 +66,11 @@ export function StatusTimeline({ status, currentKey, showQueued = false, compact
         <div
           style={{
             position: 'absolute',
-            top: dotSize / 2,
+            top: markerSize / 2,
             left: `${edgePct}%`,
             right: `${edgePct}%`,
             height: 2,
+            marginTop: -1,
             background: 'var(--color-border)',
             borderRadius: 999,
           }}
@@ -58,10 +78,11 @@ export function StatusTimeline({ status, currentKey, showQueued = false, compact
         <div
           style={{
             position: 'absolute',
-            top: dotSize / 2,
+            top: markerSize / 2,
             left: `${edgePct}%`,
             width: `${Math.max(0, progressPct)}%`,
             height: 2,
+            marginTop: -1,
             background: progressColor,
             borderRadius: 999,
           }}
@@ -78,23 +99,21 @@ export function StatusTimeline({ status, currentKey, showQueued = false, compact
             const isDone = index < resolvedIndex;
             const isCurrent = index === resolvedIndex;
             const isFailedStep = step.key === 'failed';
-            const dotBorder = isFailedStep
+            const isFuture = index > resolvedIndex && !isFailedStep;
+            const fill = isFailedStep
               ? 'var(--color-tag-pink-text)'
               : isCurrent
               ? 'var(--color-brand)'
               : isDone
               ? 'var(--color-tag-green-text)'
-              : 'var(--color-border)';
-            const dotBg = isFailedStep
-              ? 'var(--color-tag-pink-bg)'
-              : isCurrent
-              ? 'var(--color-brand)'
-              : isDone
-              ? 'var(--color-accent-green-bg)'
               : 'transparent';
 
             return (
-              <div key={step.key} className="flex items-center justify-center" style={{ position: 'relative' }}>
+              <div
+                key={step.key}
+                className="flex items-center justify-center"
+                style={{ position: 'relative', height: markerSize }}
+              >
                 {showPulse && isCurrent && (
                   <span
                     className="status-pulse"
@@ -105,17 +124,32 @@ export function StatusTimeline({ status, currentKey, showQueued = false, compact
                     }}
                   />
                 )}
-                <span
-                  style={{
-                    width: dotSize,
-                    height: dotSize,
-                    borderRadius: 999,
-                    border: `2px solid ${dotBorder}`,
-                    background: dotBg,
-                    display: 'inline-block',
-                    boxSizing: 'border-box',
-                  }}
-                />
+                {isFuture ? (
+                  <span
+                    style={{
+                      width: futureDot,
+                      height: futureDot,
+                      borderRadius: 999,
+                      border: '2px solid var(--color-border)',
+                      background: 'transparent',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                ) : (
+                  <span
+                    style={{
+                      width: markerSize,
+                      height: markerSize,
+                      borderRadius: 999,
+                      background: fill,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    {isFailedStep ? <Cross size={iconSize} /> : <Tick size={iconSize} />}
+                  </span>
+                )}
               </div>
             );
           })}

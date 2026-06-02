@@ -44,6 +44,10 @@
 html, body {
   margin: 0;
   padding: 0;
+  height: 100%;
+  /* The app shell owns its own 100vh scroll regions; never let the page itself
+     scroll sideways (kills the stray horizontal scrollbar). */
+  overflow-x: hidden;
   font-family: 'Plus Jakarta Sans', 'DM Sans', system-ui, sans-serif;
   color: var(--color-text-primary);
   background: var(--color-bg-app);
@@ -89,6 +93,63 @@ button:disabled { opacity: 0.6; cursor: not-allowed !important; }
   animation: statusPulse 1.6s ease-out infinite;
   pointer-events: none;
 }
+
+/* ---- WhatsApp connection feedback ---- */
+
+/* Sleek "breathing" dot shown while WhatsApp is connecting / awaiting a scan. */
+@keyframes waBreathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.7); }
+}
+.wa-breathe { animation: waBreathe 1.15s ease-in-out infinite; }
+
+/* Expanding ring that radiates out of the connecting dot. */
+@keyframes waRipple {
+  0%   { transform: scale(0.6); opacity: 0.6; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+.wa-ripple {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  animation: waRipple 1.4s ease-out infinite;
+  pointer-events: none;
+}
+
+/* One-shot celebration when the number links: the badge pops, a ring bursts
+   out, and the tick draws itself in. */
+@keyframes waPop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  55%  { transform: scale(1.18); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.wa-pop { animation: waPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+@keyframes waBurst {
+  0%   { transform: scale(0.5); opacity: 0.55; }
+  100% { transform: scale(2.8); opacity: 0; }
+}
+.wa-burst {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  animation: waBurst 0.65s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes drawCheck { to { stroke-dashoffset: 0; } }
+.check-draw {
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+  animation: drawCheck 0.4s 0.12s ease forwards;
+}
+
+/* Toast slide-in for the "saved to PC" confirmation. */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.toast-enter { animation: toastIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
