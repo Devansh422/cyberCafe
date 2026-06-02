@@ -22,8 +22,12 @@ const WA_PORT = parseInt(process.env.WA_PORT || '5099', 10);
 const CORE_URL = (process.env.CORE_URL || 'http://127.0.0.1:5000').replace(/\/$/, '');
 const SESSION_DIR = process.env.WA_SESSION_DIR || path.join(__dirname, '.wwebjs_auth');
 const READY_TIMEOUT_MS = parseInt(process.env.WA_READY_TIMEOUT_MS || '75000', 10);
-const SESSION_RESET_AFTER = 3;
 const MAX_IMPORT_ATTEMPTS = 3;
+// Reconnect backoff grows 5s, 10s, 15s … capped here, and we retry forever: a
+// long network outage (or the app being closed) must recover on its own once
+// connectivity returns. The saved session is NEVER discarded for a mere
+// connectivity blip — only a real auth_failure (the phone unlinked us) wipes it.
+const RECONNECT_MAX_DELAY_MS = 60000;
 
 // LocalAuth stores the Chromium user-data-dir at <dataPath>/session-<clientId>.
 // This is the directory puppeteer locks (and the one we must reap on recovery).
@@ -33,7 +37,6 @@ const state = { status: 'idle', qr: null, qrGeneratedAt: null, lastError: null }
 let client = null;
 let reconnecting = false;
 let reconnectCount = 0;
-let consecutiveFailures = 0;
 let readyWatchdog = null;
 // PID of the Chromium puppeteer launched, so we can kill its whole tree on
 // shutdown/recovery even if a clean close fails.
@@ -180,7 +183,6 @@ function armWatchdog(ms = READY_TIMEOUT_MS) {
   readyWatchdog = setTimeout(() => {
     readyWatchdog = null;
     if (state.status === 'ready' || state.status === 'awaiting_qr') return;
-    consecutiveFailures += 1;
     forceReconnect(`stuck at "${state.status}" for ${Math.round(ms / 1000)}s`);
   }, ms);
   if (readyWatchdog.unref) readyWatchdog.unref();
@@ -192,22 +194,56 @@ async function forceReconnect(reason) {
   const dead = client; client = null;
   setStatus('reconnecting');
   await teardownBrowser(dead);
-  scheduleReconnect(4000);
+  scheduleReconnect();
 }
 
 function clearSession() {
   killTree(browserPid);
   browserPid = null;
-  try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); consecutiveFailures = 0; log('cleared session'); }
+  try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); log('cleared session'); }
   catch (e) { log('could not clear session:', e.message); }
 }
 
-function scheduleReconnect(delay = 10000) {
+// Best-effort connectivity probe. Avoids churning Chromium launch/kill cycles
+// while we're offline — we only attempt a (re)connect once the internet is back.
+async function isOnline() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    await fetch('https://web.whatsapp.com/', { method: 'HEAD', signal: ctrl.signal, cache: 'no-store' });
+    clearTimeout(t);
+    return true;
+  } catch { return false; }
+}
+
+// True once WhatsApp has been linked at least once (the LocalAuth profile
+// exists). Drives auto-reconnect of the previously connected number on boot and
+// keeps us retrying after a drop instead of sitting idle until a manual click.
+function hasSession() {
+  try { return fs.existsSync(PROFILE_DIR) && fs.readdirSync(PROFILE_DIR).length > 0; }
+  catch { return false; }
+}
+
+function scheduleReconnect() {
   if (shuttingDown || reconnecting) return;
-  if (consecutiveFailures >= SESSION_RESET_AFTER) { clearSession(); reconnectCount = 0; }
-  if (reconnectCount >= 5) { setStatus('failed'); log('giving up after max reconnects'); return; }
-  reconnecting = true; reconnectCount += 1;
-  setTimeout(() => { reconnecting = false; startClient().catch((e) => log('reconnect failed:', e.message)); }, delay);
+  reconnecting = true;
+  reconnectCount += 1;
+  const delay = Math.min(5000 * reconnectCount, RECONNECT_MAX_DELAY_MS);
+  log(`reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectCount})`);
+  const t = setTimeout(async () => {
+    reconnecting = false;
+    if (shuttingDown) return;
+    // Don't launch a browser into a dead network — wait for connectivity, then
+    // retry. (Skip the probe when there's no saved session: a first-time QR scan
+    // needs the browser up regardless.)
+    if (hasSession() && !(await isOnline())) {
+      setStatus('disconnected', { lastError: 'waiting for internet…' });
+      scheduleReconnect();
+      return;
+    }
+    startClient().catch((e) => log('reconnect failed:', e.message));
+  }, delay);
+  if (t.unref) t.unref();
 }
 
 function mimeToExt(type) {
@@ -315,7 +351,6 @@ async function onSelf(msg) {
 
 async function startClient() {
   if (shuttingDown || client) return;
-  if (state.status === 'failed') { reconnectCount = 0; consecutiveFailures = 0; }
 
   let Client, LocalAuth, QRCode;
   try {
@@ -360,25 +395,31 @@ async function startClient() {
   client.on('loading_screen', () => { setStatus('loading'); armWatchdog(); });
   client.on('authenticated', () => { state.qr = null; armWatchdog(); setStatus('authenticated'); });
   client.on('auth_failure', (m) => {
-    consecutiveFailures += 1; clearWatchdog();
+    // The phone rejected our saved credentials (e.g. the device was unlinked
+    // from the phone). This is the ONE case where the session is genuinely dead
+    // — wipe it so the next start shows a fresh QR instead of looping forever.
+    clearWatchdog();
     const dead = client; client = null;
     teardownBrowser(dead).catch(() => {});
+    clearSession();
     setStatus('auth_failed', { lastError: String(m) });
-    scheduleReconnect(20000);
+    scheduleReconnect();
   });
   client.on('ready', () => {
     state.qr = null; state.lastError = null; clearWatchdog();
-    reconnectCount = 0; consecutiveFailures = 0;
+    reconnectCount = 0;
     try { browserPid = client?.pupBrowser?.process?.()?.pid || browserPid; } catch { /* ignore */ }
     setStatus('ready');
     log('client ready');
   });
   client.on('disconnected', (r) => {
+    // A drop (network loss, phone offline, app closed). Keep the session and
+    // keep retrying — scheduleReconnect waits for connectivity to return.
     clearWatchdog();
     const dead = client; client = null;
     teardownBrowser(dead).catch(() => {});
     setStatus('disconnected', { lastError: String(r) });
-    scheduleReconnect(15000);
+    scheduleReconnect();
   });
   client.on('message', (msg) => { try { onIncoming(msg); } catch (e) { log('msg err', e.message); } });
   client.on('message_create', (msg) => { onSelf(msg).catch((e) => log('self err', e.message)); });
@@ -389,7 +430,7 @@ async function startClient() {
     try { browserPid = client?.pupBrowser?.process?.()?.pid || null; } catch { browserPid = null; }
   } catch (e) {
     const msg = e.message || String(e);
-    consecutiveFailures += 1; clearWatchdog();
+    clearWatchdog();
     const dead = client; client = null;
     await teardownBrowser(dead);
     // The classic "browser already running" / launch failure: an orphan still
@@ -400,7 +441,7 @@ async function startClient() {
       clearBrowserLocks();
     }
     setStatus('error', { lastError: msg });
-    scheduleReconnect(8000);
+    scheduleReconnect();
   }
 }
 
@@ -410,7 +451,7 @@ async function startClient() {
 async function revokeSession() {
   log('revoking WhatsApp session');
   clearWatchdog();
-  reconnecting = false; reconnectCount = 0; consecutiveFailures = 0;
+  reconnecting = false; reconnectCount = 0;
   setStatus('logging_out', { qr: null, qrGeneratedAt: null, lastError: null });
 
   const c = client; client = null;
@@ -489,4 +530,11 @@ process.on('exit', () => { killTree(browserPid); });
 server.listen(WA_PORT, '127.0.0.1', () => {
   log(`listening on http://127.0.0.1:${WA_PORT}  (core=${CORE_URL}, session=${SESSION_DIR})`);
   pushState(); // announce initial 'idle' to the core
+  // If WhatsApp was linked before, reconnect automatically on launch from the
+  // cached session instead of waiting for a manual "Start" click. This is what
+  // makes the previously connected number come back after an app close.
+  if (hasSession()) {
+    log('saved session found — auto-reconnecting');
+    startClient().catch((e) => log('auto-start failed:', e.message));
+  }
 });

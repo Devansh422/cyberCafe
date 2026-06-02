@@ -1,69 +1,13 @@
 'use client';
-// Auto-update prompt. On launch (inside the Tauri desktop app only) this asks
-// the updater whether a newer signed release is published; if so it shows a
-// card offering to install it. On confirm it downloads, installs, and relaunches
-// the app. Outside Tauri (e.g. `next dev` in a browser) it renders nothing.
-import { useEffect, useState } from 'react';
-
-function inTauri() {
-  return typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
-}
+// The update prompt card. Reads shared state from UpdateContext (the automatic
+// launch check and the nav "Check for updates" button both feed it). Shows when
+// an update is available, while it's downloading, or if an install failed.
+import { useUpdate } from './UpdateContext';
 
 export function UpdateNotifier() {
-  const [update, setUpdate] = useState(null);
-  const [info, setInfo] = useState(null); // { version, body }
-  const [phase, setPhase] = useState('idle'); // idle | available | downloading | error
-  const [pct, setPct] = useState(0);
-  const [err, setErr] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!inTauri()) return; // running in a plain browser — nothing to update
-      try {
-        const { check } = await import('@tauri-apps/plugin-updater');
-        const found = await check();
-        if (!cancelled && found && found.available) {
-          setUpdate(found);
-          setInfo({ version: found.version, body: found.body });
-          setPhase('available');
-        }
-      } catch (e) {
-        // Offline, no published release yet, or signature mismatch — stay quiet
-        // so a failed check never blocks the app.
-        console.warn('[updater] check failed:', e?.message || e);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  async function install() {
-    if (!update) return;
-    setErr(null);
-    setPhase('downloading');
-    setPct(0);
-    try {
-      let total = 0;
-      let got = 0;
-      await update.downloadAndInstall((event) => {
-        if (event.event === 'Started') {
-          total = event.data?.contentLength || 0;
-        } else if (event.event === 'Progress') {
-          got += event.data?.chunkLength || 0;
-          if (total) setPct(Math.min(100, Math.round((got / total) * 100)));
-        } else if (event.event === 'Finished') {
-          setPct(100);
-        }
-      });
-      // Installer applied — relaunch into the new version.
-      const { relaunch } = await import('@tauri-apps/plugin-process');
-      await relaunch();
-    } catch (e) {
-      setErr(String(e?.message || e));
-      setPhase('error');
-    }
-  }
-
+  const ctx = useUpdate();
+  if (!ctx) return null;
+  const { phase, info, pct, err, install, dismiss } = ctx;
   if (phase === 'idle') return null;
 
   return (
@@ -119,7 +63,7 @@ export function UpdateNotifier() {
       {phase !== 'downloading' && (
         <div className="flex items-center justify-end gap-2">
           <button
-            onClick={() => setPhase('idle')}
+            onClick={dismiss}
             className="rounded-pill text-sm font-semibold"
             style={{ padding: '8px 16px', background: 'transparent', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', cursor: 'pointer' }}
           >

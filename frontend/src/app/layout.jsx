@@ -2,6 +2,7 @@ import './globals.css';
 import { TopNav } from '@/components/TopNav';
 import { ActivitySidebar } from '@/components/ActivitySidebar';
 import { UpdateNotifier } from '@/components/UpdateNotifier';
+import { UpdateProvider } from '@/components/UpdateContext';
 
 export const metadata = {
   title: 'Ratan — Cyber Cafe Print Automation',
@@ -12,30 +13,32 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 320px',
-            gridTemplateRows: 'auto 1fr',
-            minHeight: '100vh',
-            background: 'var(--color-bg-app)',
-          }}
-        >
-          <div style={{ gridColumn: '1 / -1' }}>
-            <TopNav />
-          </div>
-          <main
+        <UpdateProvider>
+          <div
             style={{
-              padding: 24,
-              overflowY: 'auto',
-              height: 'calc(100vh - 56px)',
+              display: 'grid',
+              gridTemplateColumns: '1fr 320px',
+              gridTemplateRows: 'auto 1fr',
+              minHeight: '100vh',
+              background: 'var(--color-bg-app)',
             }}
           >
-            {children}
-          </main>
-          <ActivitySidebar />
-        </div>
-        <UpdateNotifier />
+            <div style={{ gridColumn: '1 / -1' }}>
+              <TopNav />
+            </div>
+            <main
+              style={{
+                padding: 24,
+                overflowY: 'auto',
+                height: 'calc(100vh - 56px)',
+              }}
+            >
+              {children}
+            </main>
+            <ActivitySidebar />
+          </div>
+          <UpdateNotifier />
+        </UpdateProvider>
       </body>
     </html>
   );

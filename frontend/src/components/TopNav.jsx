@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { WhatsAppStatus } from './WhatsAppQR';
 import { NetworkStatus } from './NetworkStatus';
+import { CheckUpdatesButton } from './CheckUpdatesButton';
 
 const NAV = [
   { href: '/', label: 'Incoming' },
@@ -54,6 +55,7 @@ export function TopNav() {
       </nav>
 
       <div className="flex items-center gap-3">
+        <CheckUpdatesButton />
         <NetworkStatus />
         <WhatsAppStatus />
         <div className="flex items-center gap-2">
