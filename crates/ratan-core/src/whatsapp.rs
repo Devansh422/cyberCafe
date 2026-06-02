@@ -105,6 +105,28 @@ impl WhatsApp {
         Ok(())
     }
 
+    /// Unlink the currently connected WhatsApp number and present a fresh QR so
+    /// a different number can be linked. Forwards to the sidecar's `/logout`,
+    /// which tells WhatsApp to drop the linked device, wipes the saved session,
+    /// and auto-starts a new client.
+    pub async fn logout(&self) -> AppResult<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        self.ensure_spawned();
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/logout", self.sidecar_port);
+        for _ in 0..6 {
+            if client.post(&url).send().await.is_ok() {
+                self.set_state("logging_out".into(), None, None);
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        tracing::warn!("[whatsapp] could not reach sidecar at {url} to logout");
+        Ok(())
+    }
+
     fn ensure_spawned(&self) {
         let mut guard = self.child.lock().unwrap();
         // Already running?
@@ -156,6 +178,20 @@ impl Drop for WhatsApp {
     fn drop(&mut self) {
         if let Ok(mut g) = self.child.lock() {
             if let Some(mut ch) = g.take() {
+                // Kill the sidecar AND its Chromium descendants. A plain
+                // `ch.kill()` only terminates the Node sidecar and leaves the
+                // browser it spawned orphaned, holding the profile lock — the
+                // exact cause of the next launch's "browser already running"
+                // error. `taskkill /T` tears down the whole tree.
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    let pid = ch.id().to_string();
+                    let _ = Command::new("taskkill")
+                        .args(["/PID", pid.as_str(), "/T", "/F"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .status();
+                }
                 let _ = ch.kill();
             }
         }

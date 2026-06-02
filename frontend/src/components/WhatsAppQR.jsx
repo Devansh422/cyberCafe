@@ -14,6 +14,7 @@ const STATUS_TONE = {
   disabled: 'pink',
   idle: 'yellow',
   unavailable: 'pink',
+  logging_out: 'yellow',
 };
 
 const STATUS_LABEL = {
@@ -27,12 +28,14 @@ const STATUS_LABEL = {
   disabled: 'Disabled',
   idle: 'Idle',
   unavailable: 'Install backend deps',
+  logging_out: 'Disconnecting…',
 };
 
 export function WhatsAppStatus() {
   const { data, mutate } = useSWR('/system/whatsapp/qr', api.fetcher, { refreshInterval: 3000 });
   const [open, setOpen] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [revoking, setRevoking] = useState(false);
 
   const status = data?.status || 'idle';
   const tone = STATUS_TONE[status] || 'yellow';
@@ -53,6 +56,14 @@ export function WhatsAppStatus() {
     try { await api.startWhatsapp(); await mutate(); }
     catch (e) { console.error(e); }
     finally { setStarting(false); }
+  }
+
+  async function revoke() {
+    if (!window.confirm('Disconnect this WhatsApp number? The linked device will be removed and you’ll need to scan a new QR code to link a different number.')) return;
+    setRevoking(true);
+    try { await api.logoutWhatsapp(); await mutate(); }
+    catch (e) { console.error(e); }
+    finally { setRevoking(false); }
   }
 
   return (
@@ -144,6 +155,22 @@ export function WhatsAppStatus() {
             >
               {starting ? 'Starting…' : status === 'ready' ? 'Restart' : 'Start / Refresh QR'}
             </button>
+            {(status === 'ready' || status === 'authenticated') && (
+              <button
+                onClick={revoke}
+                disabled={revoking}
+                className="rounded-pill font-semibold text-sm"
+                style={{
+                  background: 'transparent',
+                  color: 'var(--color-tag-pink-text)',
+                  padding: '8px 16px',
+                  border: '1.5px solid var(--color-tag-pink-text)',
+                  cursor: revoking ? 'wait' : 'pointer',
+                }}
+              >
+                {revoking ? 'Disconnecting…' : 'Disconnect & use another number'}
+              </button>
+            )}
           </div>
         </div>
       )}

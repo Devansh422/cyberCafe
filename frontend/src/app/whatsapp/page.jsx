@@ -40,11 +40,13 @@ function QrCountdown({ age }) {
 export default function WhatsAppPage() {
   const { data, mutate } = useSWR('/system/whatsapp/qr', api.fetcher, { refreshInterval: 2000 });
   const [starting, setStarting] = useState(false);
+  const [revoking, setRevoking] = useState(false);
 
   const status = data?.status || 'idle';
   const qr = data?.qr;
   const qrAge = data?.qrAge || 0;
   const isReady = status === 'ready';
+  const isConnected = status === 'ready' || status === 'authenticated';
   const hasError = ['auth_failed', 'error', 'disconnected', 'unavailable'].includes(status);
 
   async function start() {
@@ -52,6 +54,14 @@ export default function WhatsAppPage() {
     try { await api.startWhatsapp(); await mutate(); }
     catch (e) { console.error(e); }
     finally { setStarting(false); }
+  }
+
+  async function revoke() {
+    if (!window.confirm('Disconnect this WhatsApp number? The linked device will be removed and you’ll need to scan a new QR code to link a different number.')) return;
+    setRevoking(true);
+    try { await api.logoutWhatsapp(); await mutate(); }
+    catch (e) { console.error(e); }
+    finally { setRevoking(false); }
   }
 
   return (
@@ -139,21 +149,38 @@ export default function WhatsAppPage() {
             </div>
           )}
 
-          {isReady ? (
-            <div
-              className="rounded-md text-sm font-semibold"
-              style={{
-                background: 'var(--color-accent-green-bg)',
-                color: 'var(--color-tag-green-text)',
-                padding: '12px 16px',
-              }}
-            >
-              ✓ Connected! Files sent to your WhatsApp will appear in Incoming automatically.
+          {isConnected ? (
+            <div className="flex flex-col gap-3">
+              <div
+                className="rounded-md text-sm font-semibold"
+                style={{
+                  background: 'var(--color-accent-green-bg)',
+                  color: 'var(--color-tag-green-text)',
+                  padding: '12px 16px',
+                }}
+              >
+                ✓ Connected! Files sent to your WhatsApp will appear in Incoming automatically.
+              </div>
+              <button
+                onClick={revoke}
+                disabled={revoking}
+                className="rounded-pill font-semibold text-sm"
+                style={{
+                  padding: '10px 18px',
+                  background: 'transparent',
+                  color: 'var(--color-tag-pink-text)',
+                  border: '1.5px solid var(--color-tag-pink-text)',
+                  cursor: revoking ? 'wait' : 'pointer',
+                  opacity: revoking ? 0.7 : 1,
+                }}
+              >
+                {revoking ? 'Disconnecting…' : 'Disconnect & use another number'}
+              </button>
             </div>
           ) : (
             <button
               onClick={start}
-              disabled={starting || status === 'starting' || status === 'loading'}
+              disabled={starting || status === 'starting' || status === 'loading' || status === 'logging_out'}
               className="rounded-pill font-semibold text-sm"
               style={{
                 padding: '12px 20px',
@@ -164,7 +191,13 @@ export default function WhatsAppPage() {
                 opacity: starting ? 0.7 : 1,
               }}
             >
-              {starting ? 'Starting…' : status === 'idle' ? 'Start WhatsApp' : 'Restart / New QR'}
+              {status === 'logging_out'
+                ? 'Disconnecting…'
+                : starting
+                ? 'Starting…'
+                : status === 'idle'
+                ? 'Start WhatsApp'
+                : 'Restart / New QR'}
             </button>
           )}
         </div>

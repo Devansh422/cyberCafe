@@ -42,6 +42,8 @@ export const api = {
   status: () => request('/system/status'),
   qr: () => request('/system/whatsapp/qr'),
   startWhatsapp: () => request('/system/whatsapp/start', { method: 'POST' }),
+  // Unlink the current WhatsApp number and show a fresh QR for a different one.
+  logoutWhatsapp: () => request('/system/whatsapp/logout', { method: 'POST' }),
   printers: () => request('/system/printers'),
   activity: (limit = 25) => request(`/system/activity?limit=${limit}`),
   diagnostics: () => request('/system/diagnostics'),

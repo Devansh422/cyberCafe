@@ -1,6 +1,7 @@
 import './globals.css';
 import { TopNav } from '@/components/TopNav';
 import { ActivitySidebar } from '@/components/ActivitySidebar';
+import { UpdateNotifier } from '@/components/UpdateNotifier';
 
 export const metadata = {
   title: 'Ratan — Cyber Cafe Print Automation',
@@ -34,6 +35,7 @@ export default function RootLayout({ children }) {
           </main>
           <ActivitySidebar />
         </div>
+        <UpdateNotifier />
       </body>
     </html>
   );

@@ -20,6 +20,7 @@ pub fn router() -> Router<SharedState> {
         .route("/status", get(status))
         .route("/whatsapp/qr", get(wa_qr))
         .route("/whatsapp/start", post(wa_start))
+        .route("/whatsapp/logout", post(wa_logout))
         // Internal endpoints the WhatsApp sidecar pushes to.
         .route("/whatsapp/state", post(wa_state_push))
         .route("/whatsapp/import", post(wa_import))
@@ -89,6 +90,11 @@ async fn wa_qr(State(st): State<SharedState>) -> Json<WaState> {
 
 async fn wa_start(State(st): State<SharedState>) -> AppResult<Json<WaState>> {
     st.whatsapp.start().await?;
+    Ok(Json(st.whatsapp.get_state()))
+}
+
+async fn wa_logout(State(st): State<SharedState>) -> AppResult<Json<WaState>> {
+    st.whatsapp.logout().await?;
     Ok(Json(st.whatsapp.get_state()))
 }
 
