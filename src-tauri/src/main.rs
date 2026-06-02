@@ -57,6 +57,23 @@ fn main() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Ratan");
+        .build(tauri::generate_context!())
+        .expect("error while building Ratan")
+        .run(|_app, event| {
+            // On exit, make sure the WhatsApp sidecar (and the Chromium it
+            // spawned) is gone. A leftover whatsapp-sidecar.exe keeps the file
+            // locked, which breaks both reinstalls and the in-place auto-update
+            // ("Error opening file for writing … whatsapp-sidecar.exe").
+            if let tauri::RunEvent::Exit = event {
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/IM", "whatsapp-sidecar.exe", "/T", "/F"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .status();
+                }
+            }
+        });
 }
