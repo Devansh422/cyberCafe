@@ -216,7 +216,6 @@ fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, f32, f32, f32)
     let (aw, ah) = (imaging::A4_W, imaging::A4_H);
     let mut canvas = RgbImage::from_pixel(aw, ah, Rgb([255, 255, 255]));
     let cells = collage_cells(layout);
-    let mut guides = Vec::new();
 
     for (i, (img, zoom, pan_x, pan_y)) in items.into_iter().enumerate() {
         let [fx, fy, fw, fh] = cells[i];
@@ -240,16 +239,31 @@ fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, f32, f32, f32)
         overlay(&mut cell, &scaled, dx, dy);
         overlay(&mut canvas, &cell, cx, cy);
 
-        // Cut guide in PDF points (origin bottom-left, so flip y).
-        guides.push(crate::pdf::Guide {
-            x: fx * imaging::A4_PT_W,
-            y: (1.0 - (fy + fh)) * imaging::A4_PT_H,
-            w: fw * imaging::A4_PT_W,
-            h: fh * imaging::A4_PT_H,
-        });
+        // Draw dashed guide on canvas
+        let x0 = cx as i32;
+        let y0 = cy as i32;
+        let x1 = (cx + cw as i64) as i32 - 1;
+        let y1 = (cy + ch as i64) as i32 - 1;
+        
+        let color = Rgb([200, 200, 200]);
+        let dash_len = 20;
+        for x in x0..=x1 {
+            if (x / dash_len) % 2 == 0 {
+                if x >= 0 && x < aw as i32 && y0 >= 0 && y0 < ah as i32 { canvas.put_pixel(x as u32, y0 as u32, color); }
+                if x >= 0 && x < aw as i32 && y1 >= 0 && y1 < ah as i32 { canvas.put_pixel(x as u32, y1 as u32, color); }
+            }
+        }
+        for y in y0..=y1 {
+            if (y / dash_len) % 2 == 0 {
+                if x0 >= 0 && x0 < aw as i32 && y >= 0 && y < ah as i32 { canvas.put_pixel(x0 as u32, y as u32, color); }
+                if x1 >= 0 && x1 < aw as i32 && y >= 0 && y < ah as i32 { canvas.put_pixel(x1 as u32, y as u32, color); }
+            }
+        }
     }
 
-    crate::pdf::image_page(&canvas.into_raw(), aw, ah, imaging::A4_PT_W, imaging::A4_PT_H, &guides)
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(canvas).write_to(&mut buf, image::ImageFormat::Jpeg).map_err(|e| anyhow::anyhow!("jpeg encode failed: {}", e))?;
+    Ok(buf.into_inner())
 }
 
 /// Build a 2-photo collage (horizontal or vertical) and register it as a new
@@ -285,51 +299,43 @@ pub async fn make_collage(state: &SharedState, layout: &str, items: &[CollageIte
 
     let layout_owned = if layout == "horizontal" { "horizontal".to_string() } else { "vertical".to_string() };
     let layout_for_blocking = layout_owned.clone();
-    let pdf_bytes = tokio::task::spawn_blocking(move || compose_collage(&layout_for_blocking, loaded))
+    let jpeg_bytes = tokio::task::spawn_blocking(move || compose_collage(&layout_for_blocking, loaded))
         .await
         .map_err(|e| AppError::internal(e.to_string()))??;
 
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let dest_name = format!("collage_{ts}_{layout_owned}.pdf");
+    let dest_name = format!("collage_{ts}_{layout_owned}.jpg");
     let dest_dir = state.config.folder_path("processed");
     std::fs::create_dir_all(&dest_dir)?;
     let dest = dest_dir.join(&dest_name);
-    std::fs::write(&dest, &pdf_bytes)?;
+    std::fs::write(&dest, &jpeg_bytes)?;
 
-    let size = pdf_bytes.len() as i64;
+    let size = jpeg_bytes.len() as i64;
     let batch_id = uuid::Uuid::new_v4().to_string();
-    let job = state.db.with(|c| -> rusqlite::Result<Option<Job>> {
+    let job_id = state.db.with(|c| -> rusqlite::Result<i64> {
         let created = jobs::create_job(
             c,
             &jobs::NewJob {
                 filename: dest_name.clone(),
                 original_name: Some(format!("Collage ({layout_owned})")),
-                job_type: Some("pdf".into()),
-                mime_type: Some("application/pdf".into()),
+                job_type: Some("image".into()),
+                mime_type: Some("image/jpeg".into()),
                 size: Some(size),
                 customer_name: first_name,
                 customer_phone: first_phone,
-                status: Some("processed".into()),
+                status: Some("incoming".into()),
                 source: Some("collage".into()),
                 storage_folder: "processed".into(),
                 batch_id: Some(batch_id.clone()),
                 ..Default::default()
             },
         )?;
-        let updated = jobs::update_job(
-            c,
-            created.id,
-            &jobs::JobPatch {
-                processed_path: Some(dest.to_string_lossy().to_string()),
-                preset: Some("collage".into()),
-                pages: Some(1),
-                ..Default::default()
-            },
-        )?;
-        activity::log(c, updated.as_ref().map(|j| j.id), "collage_created", Some(&format!("2-photo {layout_owned} collage → {dest_name}")));
-        Ok(updated)
+        activity::log(c, Some(created.id), "collage_created", Some(&format!("2-photo {layout_owned} collage → {dest_name}")));
+        Ok(created.id)
     })?;
-    job.ok_or_else(|| AppError::internal("collage job vanished"))
+
+    let processed_job = process_job(state, job_id, "high_contrast").await?;
+    Ok(processed_job)
 }
 
 // ---- Print engine (SumatraPDF) ---------------------------------------------

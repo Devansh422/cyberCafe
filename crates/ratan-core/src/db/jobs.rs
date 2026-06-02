@@ -34,6 +34,7 @@ pub struct Job {
     pub updated_at: Option<String>,
     pub printed_at: Option<String>,
     pub batch_id: Option<String>,
+    pub recipe: Option<String>,
 }
 
 impl Job {
@@ -62,6 +63,7 @@ impl Job {
             updated_at: row.get("updated_at")?,
             printed_at: row.get("printed_at")?,
             batch_id: row.get("batch_id")?,
+            recipe: row.get("recipe")?,
         })
     }
 }
@@ -82,6 +84,7 @@ pub struct NewJob {
     pub source: Option<String>,
     pub storage_folder: String,
     pub batch_id: Option<String>,
+    pub recipe: Option<String>,
 }
 
 /// Sparse update (mirrors the `updateJob` patch object). `None` fields are left
@@ -99,6 +102,7 @@ pub struct JobPatch {
     pub error: Option<String>,
     pub printed_at: Option<String>,
     pub batch_id: Option<String>,
+    pub recipe: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,8 +119,8 @@ pub fn create_job(conn: &Connection, job: &NewJob) -> rusqlite::Result<Job> {
         "INSERT INTO print_jobs
             (filename, original_name, type, mime_type, size, hash,
              customer_id, customer_name, customer_phone,
-             status, source, storage_folder, batch_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             status, source, storage_folder, batch_id, recipe)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         params![
             job.filename,
             job.original_name.clone().unwrap_or_else(|| job.filename.clone()),
@@ -131,6 +135,7 @@ pub fn create_job(conn: &Connection, job: &NewJob) -> rusqlite::Result<Job> {
             job.source.clone().unwrap_or_else(|| "whatsapp".to_string()),
             job.storage_folder,
             job.batch_id,
+            job.recipe,
         ],
     )?;
     let id = conn.last_insert_rowid();

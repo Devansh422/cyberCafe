@@ -103,6 +103,9 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     ensure_column(conn, "print_jobs", "batch_id", "TEXT")?;
+    // JSON describing how a derived job (e.g. a collage) was built, so it can be
+    // re-rendered with a different preset later.
+    ensure_column(conn, "print_jobs", "recipe", "TEXT")?;
 
     conn.execute_batch(
         r#"

@@ -15,7 +15,7 @@ pub struct Guide {
 
 /// Build a one-page PDF (`page_w`×`page_h` points) with the RGB image
 /// (`px_w`×`px_h`, 3 bytes/pixel) drawn to fill the page, plus optional light-gray
-/// guide rectangles.
+/// guide rectangles. The raw pixels are Flate-compressed.
 pub fn image_page(
     rgb: &[u8],
     px_w: u32,
@@ -25,8 +25,6 @@ pub fn image_page(
     guides: &[Guide],
 ) -> anyhow::Result<Vec<u8>> {
     let mut doc = Document::with_version("1.5");
-    let pages_id = doc.new_object_id();
-
     let img_dict = dictionary! {
         "Type" => "XObject",
         "Subtype" => "Image",
@@ -38,6 +36,46 @@ pub fn image_page(
     let mut img_stream = Stream::new(img_dict, rgb.to_vec());
     let _ = img_stream.compress();
     let img_id = doc.add_object(img_stream);
+    finish_image_page(doc, img_id, page_w, page_h, guides)
+}
+
+/// Like [`image_page`] but embeds an already-encoded **JPEG** via `DCTDecode`.
+/// Photos compress an order of magnitude smaller than raw-RGB+Flate, so this is
+/// what the collage pipeline uses to avoid huge output files.
+pub fn jpeg_page(
+    jpeg: &[u8],
+    px_w: u32,
+    px_h: u32,
+    page_w: f64,
+    page_h: f64,
+    guides: &[Guide],
+) -> anyhow::Result<Vec<u8>> {
+    let mut doc = Document::with_version("1.5");
+    let img_dict = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => px_w as i64,
+        "Height" => px_h as i64,
+        "ColorSpace" => "DeviceRGB",
+        "BitsPerComponent" => 8i64,
+        "Filter" => "DCTDecode",
+    };
+    // The JPEG bytes are the stream as-is — do NOT re-compress.
+    let img_stream = Stream::new(img_dict, jpeg.to_vec());
+    let img_id = doc.add_object(img_stream);
+    finish_image_page(doc, img_id, page_w, page_h, guides)
+}
+
+/// Shared page assembly: draw the image XObject `img_id` to fill the page, add
+/// optional cut-guides, and serialize the one-page document.
+fn finish_image_page(
+    mut doc: Document,
+    img_id: ObjectId,
+    page_w: f64,
+    page_h: f64,
+    guides: &[Guide],
+) -> anyhow::Result<Vec<u8>> {
+    let pages_id = doc.new_object_id();
 
     let mut ops = vec![
         Operation::new("q", vec![]),

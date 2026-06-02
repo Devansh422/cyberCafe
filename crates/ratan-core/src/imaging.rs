@@ -77,6 +77,29 @@ fn clamp_u8(v: f32) -> u8 {
     }
 }
 
+/// Apply a preset's pixel pipeline to an RGB canvas: optional grayscale, then a
+/// multiplicative brightness×contrast, then optional unsharp. Shared by the
+/// single-image render and the collage compositor.
+pub fn apply_preset_pixels(mut canvas: RgbImage, p: &Preset) -> RgbImage {
+    let factor = p.brightness * p.contrast;
+    for px in canvas.pixels_mut() {
+        let [r, g, b] = px.0;
+        let (mut r, mut g, mut b) = (r as f32, g as f32, b as f32);
+        if p.grayscale {
+            let y = 0.299 * r + 0.587 * g + 0.114 * b;
+            r = y;
+            g = y;
+            b = y;
+        }
+        px.0 = [clamp_u8(r * factor), clamp_u8(g * factor), clamp_u8(b * factor)];
+    }
+    if p.sharpen {
+        image::imageops::unsharpen(&canvas, 1.0, 1)
+    } else {
+        canvas
+    }
+}
+
 /// Run the preset pipeline and return a single-page A4 PDF.
 pub fn render_image_to_a4_pdf(bytes: &[u8], p: &Preset) -> anyhow::Result<Vec<u8>> {
     let o = read_orientation(bytes);
@@ -94,22 +117,11 @@ pub fn render_image_to_a4_pdf(bytes: &[u8], p: &Preset) -> anyhow::Result<Vec<u8
     let oy = ((A4_H.saturating_sub(nh)) / 2) as i64;
     image::imageops::overlay(&mut canvas, &resized, ox, oy);
 
-    // grayscale (channels equal) then brightness×contrast (both multiplicative).
-    let factor = p.brightness * p.contrast;
-    for px in canvas.pixels_mut() {
-        let [r, g, b] = px.0;
-        let (mut r, mut g, mut b) = (r as f32, g as f32, b as f32);
-        if p.grayscale {
-            let y = 0.299 * r + 0.587 * g + 0.114 * b;
-            r = y;
-            g = y;
-            b = y;
-        }
-        px.0 = [clamp_u8(r * factor), clamp_u8(g * factor), clamp_u8(b * factor)];
-    }
+    let canvas = apply_preset_pixels(canvas, p);
 
-    let canvas = if p.sharpen { image::imageops::unsharpen(&canvas, 1.0, 1) } else { canvas };
-
-    let raw = canvas.into_raw();
-    crate::pdf::image_page(&raw, A4_W, A4_H, A4_PT_W, A4_PT_H, &[])
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(canvas)
+        .write_to(&mut buf, image::ImageFormat::Jpeg)
+        .map_err(|e| anyhow::anyhow!("jpeg encode failed: {}", e))?;
+    crate::pdf::jpeg_page(&buf.into_inner(), A4_W, A4_H, A4_PT_W, A4_PT_H, &[])
 }
