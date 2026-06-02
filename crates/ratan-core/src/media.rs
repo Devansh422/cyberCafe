@@ -60,10 +60,16 @@ fn timestamp_slug() -> String {
     chrono::Local::now().format("%Y%m%d_%H%M%S").to_string()
 }
 
-fn build_filename(customer: Option<&str>, original_name: &str) -> String {
+fn build_filename(customer: Option<&str>, original_name: &str, hash: &str) -> String {
     let safe_customer = sanitize(customer.unwrap_or("unknown"));
     let safe_name = sanitize(if original_name.is_empty() { "file" } else { original_name });
-    format!("{}_{}_{}", timestamp_slug(), safe_customer, safe_name)
+    // A short content-hash segment guarantees distinct files never collide on
+    // disk. Without it, several files sent in the same second with the same
+    // fallback name (WhatsApp images all arrive nameless → "photo.jpg") would
+    // resolve to one identical path and overwrite each other — leaving every
+    // job pointing at the last-written file (same preview, differing sizes).
+    let short = &hash[..hash.len().min(10)];
+    format!("{}_{}_{}_{}", timestamp_slug(), safe_customer, short, safe_name)
 }
 
 fn hash_hex(buf: &[u8]) -> String {
@@ -145,7 +151,7 @@ pub fn save_incoming(db: &Db, config: &Config, p: Incoming) -> AppResult<SaveRes
     }
 
     let customer = p.customer_name.clone().or_else(|| p.customer_phone.clone());
-    let filename = build_filename(customer.as_deref(), &p.original_name);
+    let filename = build_filename(customer.as_deref(), &p.original_name, &hash);
     let target = absolute_path(config, "incoming", &filename);
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
