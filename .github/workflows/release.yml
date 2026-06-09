@@ -55,6 +55,25 @@ jobs:
           Copy-Item (Get-ChildItem sumatra -Filter *.exe)[0].FullName dist/SumatraPDF.exe -Force
         shell: pwsh
 
+      # Bundle the Visual C++ runtime app-locally (next to the exe) so the app
+      # loads on a clean Windows with no VC++ Redistributable installed. Rust's
+      # MSVC build links these dynamically, and onnxruntime (ort) needs the C++
+      # runtime too. Copying from the runner's System32 matches the MSVC toolchain
+      # that builds the binary. These are app-local DLLs, so they never touch the
+      # user's system. (WebView2 itself is handled by `webviewInstallMode:
+      # offlineInstaller`, which Tauri auto-downloads and bundles at build time.)
+      - name: Stage Visual C++ runtime DLLs
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/vcruntime | Out-Null
+          $dlls = "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"
+          foreach ($dll in $dlls) {
+            $src = Join-Path $env:WINDIR "System32\$dll"
+            if (-not (Test-Path $src)) { throw "VC++ runtime DLL not found: $src" }
+            Copy-Item $src "dist/vcruntime/$dll" -Force
+          }
+          Get-ChildItem dist/vcruntime | Format-Table Name, Length
+        shell: pwsh
+
       # tauri-action builds + signs the NSIS installer and, with
       # `createUpdaterArtifacts: true` in tauri.conf.json, also produces and
       # uploads `latest.json` + the `.sig` to the release it creates. It is the

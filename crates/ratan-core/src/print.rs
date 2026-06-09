@@ -25,6 +25,11 @@ pub struct Printer {
     pub name: String,
     #[serde(rename = "paperSizes")]
     pub paper_sizes: Vec<String>,
+    /// True for the machine's current default printer (so the UI can preselect it).
+    #[serde(rename = "isDefault")]
+    pub is_default: bool,
+    /// True if Windows reports the printer as offline / unavailable.
+    pub offline: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -93,7 +98,7 @@ impl PrintService {
             }
         }
         let out = proc::run_powershell(
-            "Get-CimInstance Win32_Printer | Select-Object DeviceID,Name,@{n='paperSizes';e={$_.PrinterPaperNames}} | ConvertTo-Json -Compress",
+            "Get-CimInstance Win32_Printer | Select-Object DeviceID,Name,Default,WorkOffline,@{n='paperSizes';e={$_.PrinterPaperNames}} | ConvertTo-Json -Compress",
         )
         .await;
         match out {
@@ -272,10 +277,14 @@ fn normalize_printers(stdout: &str) -> Vec<Printer> {
             }
             let paper = p.get("paperSizes");
             let paper_sizes = extract_paper_sizes(paper);
+            let is_default = p.get("Default").and_then(|v| v.as_bool()).unwrap_or(false);
+            let offline = p.get("WorkOffline").and_then(|v| v.as_bool()).unwrap_or(false);
             Some(Printer {
                 device_id: device.or(name).unwrap_or_default().to_string(),
                 name: name.or(device).unwrap_or_default().to_string(),
                 paper_sizes,
+                is_default,
+                offline,
             })
         })
         .collect()

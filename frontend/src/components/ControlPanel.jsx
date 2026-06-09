@@ -1,7 +1,7 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
-import { Sparkles, Printer, Layers, Wand2, Ban } from 'lucide-react';
+import { Sparkles, Printer, Layers, Wand2, Ban, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Spinner } from './Spinner';
 
@@ -30,14 +30,39 @@ export function ControlPanel({ jobs = [], batchId = null, onChange, onClose }) {
   const [copies, setCopies] = useState(1);
   const [grayscale, setGrayscale] = useState(false);
   const [busy, setBusy] = useState(null); // 'process' | 'print' | null
+  const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState(null);
   const abortRef = useRef(null); // AbortController for the in-flight action
+  const printerTouched = useRef(false); // don't override a manual printer choice
 
-  const { data: printers } = useSWR('/system/printers', api.fetcher, {
+  const { data: printers, mutate: reloadPrinters } = useSWR('/system/printers', api.fetcher, {
     revalidateOnFocus: false,
-    revalidateIfStale: false,
     dedupingInterval: 60_000,
   });
+
+  // Auto-select the machine's default printer once the list loads, unless the
+  // operator has already picked one. Empty ('') still routes to the system
+  // default, but preselecting shows which printer will be used.
+  useEffect(() => {
+    if (printerTouched.current || !Array.isArray(printers)) return;
+    const def = printers.find((p) => p.isDefault);
+    if (def) setPrinter(def.name);
+  }, [printers]);
+
+  // Re-enumerate connected printers (force the backend past its cache), e.g.
+  // after plugging in or installing a new printer.
+  async function refreshPrinters() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const fresh = await api.printers(true);
+      await reloadPrinters(fresh, { revalidate: false });
+    } catch {
+      await reloadPrinters();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const isBatch = !!batchId && jobs.length > 1;
   const count = jobs.length;
@@ -161,17 +186,30 @@ export function ControlPanel({ jobs = [], batchId = null, onChange, onClose }) {
         <div className="flex flex-col gap-1">
           <label className={`${LABEL} flex items-center gap-1.5`}>
             <Printer size={13} /> Printer
+            <button
+              type="button"
+              onClick={refreshPrinters}
+              disabled={refreshing}
+              title="Refresh connected printers"
+              aria-label="Refresh connected printers"
+              className="ml-auto flex items-center justify-center"
+              style={{ background: 'none', border: 'none', cursor: refreshing ? 'default' : 'pointer', color: 'var(--color-text-secondary)' }}
+            >
+              <RefreshCw size={13} className={refreshing ? 'lucide-spin' : undefined} />
+            </button>
           </label>
           <select
             value={printer}
             disabled={disabled}
-            onChange={(e) => setPrinter(e.target.value)}
+            onChange={(e) => { printerTouched.current = true; setPrinter(e.target.value); }}
             className="w-full text-sm rounded-sm"
             style={{ padding: '8px 10px', background: 'var(--color-bg-overlay)', border: '1px solid var(--color-border)' }}
           >
-            <option value="">Default</option>
+            <option value="">System default</option>
             {(printers || []).map((p) => (
-              <option key={p.name || p.deviceId} value={p.name}>{p.name}</option>
+              <option key={p.name || p.deviceId} value={p.name}>
+                {p.name}{p.isDefault ? ' (default)' : ''}{p.offline ? ' — offline' : ''}
+              </option>
             ))}
           </select>
         </div>

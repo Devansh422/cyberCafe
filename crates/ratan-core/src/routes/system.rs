@@ -98,8 +98,14 @@ async fn wa_logout(State(st): State<SharedState>) -> AppResult<Json<WaState>> {
     Ok(Json(st.whatsapp.get_state()))
 }
 
-async fn printers(State(st): State<SharedState>) -> Json<Vec<print::Printer>> {
-    Json(st.print.list_printers(false).await)
+#[derive(Debug, Deserialize, Default)]
+struct PrintersQuery {
+    force: Option<String>,
+}
+
+async fn printers(State(st): State<SharedState>, Query(q): Query<PrintersQuery>) -> Json<Vec<print::Printer>> {
+    let force = q.force.as_deref() == Some("1");
+    Json(st.print.list_printers(force).await)
 }
 
 async fn cancel(State(st): State<SharedState>) -> Json<Value> {

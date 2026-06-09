@@ -305,14 +305,19 @@ pub async fn make_collage(state: &SharedState, layout: &str, items: &[CollageIte
 
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let dest_name = format!("collage_{ts}_{layout_owned}.jpg");
-    let dest_dir = state.config.folder_path("processed");
+    // The collage is registered as a normal *incoming image* — NOT a finished PDF.
+    // The operator then chooses a preset (e.g. a scan look) and processes/prints it
+    // through the usual flow, so presets apply to the collage like any other photo.
+    // (Previously this force-rendered a high_contrast PDF here, which locked the
+    // collage into one look with no chance to pick a preset.)
+    let dest_dir = state.config.folder_path("incoming");
     std::fs::create_dir_all(&dest_dir)?;
     let dest = dest_dir.join(&dest_name);
     std::fs::write(&dest, &jpeg_bytes)?;
 
     let size = jpeg_bytes.len() as i64;
     let batch_id = uuid::Uuid::new_v4().to_string();
-    let job_id = state.db.with(|c| -> rusqlite::Result<i64> {
+    let job = state.db.with(|c| -> rusqlite::Result<Job> {
         let created = jobs::create_job(
             c,
             &jobs::NewJob {
@@ -325,17 +330,16 @@ pub async fn make_collage(state: &SharedState, layout: &str, items: &[CollageIte
                 customer_phone: first_phone,
                 status: Some("incoming".into()),
                 source: Some("collage".into()),
-                storage_folder: "processed".into(),
+                storage_folder: "incoming".into(),
                 batch_id: Some(batch_id.clone()),
                 ..Default::default()
             },
         )?;
-        activity::log(c, Some(created.id), "collage_created", Some(&format!("2-photo {layout_owned} collage → {dest_name}")));
-        Ok(created.id)
+        activity::log(c, Some(created.id), "collage_created", Some(&format!("2-photo {layout_owned} collage → {dest_name} (ready to process)")));
+        Ok(created)
     })?;
 
-    let processed_job = process_job(state, job_id, "high_contrast").await?;
-    Ok(processed_job)
+    Ok(job)
 }
 
 // ---- Print engine (SumatraPDF) ---------------------------------------------

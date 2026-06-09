@@ -18,7 +18,28 @@ Ratan.exe (Tauri)
 - Rust (MSVC host) + VS C++ Build Tools — installed.
 - Node 18+.
 - Tauri CLI: `npm i -D @tauri-apps/cli@^2` (in repo root) or `cargo install tauri-cli --version "^2"`.
-- WebView2 runtime (ships with Windows 11).
+- WebView2 runtime — **bundled** into the installer (`webviewInstallMode:
+  offlineInstaller`), so the target machine needs no internet and no pre-installed
+  runtime. The build host needs internet once (Tauri downloads the standalone
+  runtime installer at build time).
+
+## Self-contained packaging (runs on a clean Windows 10/11)
+The installer ships everything the app needs — nothing is downloaded or assumed
+present on the user's machine:
+- **WebView2 runtime** — `webviewInstallMode: offlineInstaller` in
+  `tauri.conf.json`. Tauri downloads Microsoft's full standalone runtime installer
+  at build time and embeds it; the NSIS installer runs it (per-user, no admin) if
+  the runtime is missing.
+- **Visual C++ runtime** — `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`
+  are bundled **next to the exe** (app-local), so the binary loads even on a clean
+  Windows with no VC++ Redistributable. Staged into `dist/vcruntime/` before the
+  build (see step 2 below); CI copies them from the runner's `System32`.
+- **Print engine** (`SumatraPDF.exe`), **WhatsApp sidecar** (`whatsapp-sidecar.exe`),
+  and the **ONNX models** are bundled resources.
+
+> Target: **Windows 10 & 11 (x64)**. Windows 7 is **not** supported — WebView2 and
+> Tauri v2 dropped Win7, which is what caused the "WebView runtime" install error
+> on Win7.
 
 ## Develop
 Run the backend and the Next.js dev server (the dev server proxies `/api` → :5000):
@@ -44,12 +65,19 @@ npm --prefix whatsapp-sidecar run package      # → dist/whatsapp-sidecar.exe
 # 2. Ensure the print engine is present (already copied from pdf-to-printer, or download)
 #    dist/SumatraPDF.exe
 
+#    …and stage the app-local Visual C++ runtime DLLs from System32:
+New-Item -ItemType Directory -Force -Path dist/vcruntime | Out-Null
+'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll' | ForEach-Object {
+  Copy-Item (Join-Path $env:WINDIR "System32\$_") "dist/vcruntime/$_" -Force
+}
+
 # 3. Build the NSIS installer (also runs frontend build:export)
 npx tauri build
 # → src-tauri/target/release/bundle/nsis/Ratan_<ver>_x64-setup.exe
 ```
-> The sidecar resource is listed in `tauri.conf.json`, so package it into
-> `dist/whatsapp-sidecar.exe` before running `npx tauri build`.
+> The sidecar, SumatraPDF, and VC++ runtime DLLs are listed as resources in
+> `tauri.conf.json`, so all of `dist/whatsapp-sidecar.exe`, `dist/SumatraPDF.exe`,
+> and `dist/vcruntime/*.dll` must exist before running `npx tauri build`.
 
 ## Auto-update setup (one-time)
 1. Generate the updater signing keypair:

@@ -99,7 +99,9 @@ function CollageCell({ rect, id, tf, onPan }) {
 
 // 2-photo collage builder for double-sided ID prints. Phase 1: pick exactly two
 // photos. Phase 2: choose horizontal/vertical and drag/zoom each onto an A4
-// page. Produces a processed PDF job (then drops into the print popup).
+// page. Produces a collage *image* (an incoming job) and opens the process popup
+// so the operator can pick a scan preset and print — the ID-print pipeline:
+// WhatsApp photos → collage image → scanned PDF → print.
 export function CollageModal({ jobs = [], onClose, onCreated }) {
   const photos = jobs.filter((j) => j.type === 'image');
   const [selected, setSelected] = useState([]); // ordered [id, id]
@@ -363,6 +365,7 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
 
               <p className="text-xs text-text-secondary" style={{ lineHeight: 1.5 }}>
                 Tip: drag a photo in the preview to slide it. The dashed line shows where to cut after printing.
+                After you create it, pick a preset (e.g. <b>High Contrast</b> for a scanned look) and print.
               </p>
 
               {err && <div className="text-xs" style={{ color: 'var(--color-tag-pink-text)' }}>{err}</div>}
@@ -401,7 +404,7 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
             }}
           >
             {generating ? <Spinner size={15} color="var(--color-brand-fg)" /> : <Images size={15} />}
-            {generating ? 'Creating…' : 'Create collage →'}
+            {generating ? 'Creating…' : 'Create & continue →'}
           </button>
         </div>
       </div>
