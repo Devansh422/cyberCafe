@@ -20,4 +20,8 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# NOTE: we deliberately do NOT set `panic = "abort"`. With abort, a Rust panic is
+# emitted as a `ud2` instruction, which surfaces as STATUS_ILLEGAL_INSTRUCTION
+# (0xc000001d) in the Windows event log — indistinguishable from a real
+# missing-CPU-instruction fault, and impossible to diagnose. Unwinding lets the
+# panic hook (see src-tauri/src/main.rs) write a readable message to a log file.

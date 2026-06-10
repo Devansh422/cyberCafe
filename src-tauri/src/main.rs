@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::ffi::OsStr;
+use std::path::PathBuf;
 
 use tauri::Manager;
 
@@ -15,7 +16,36 @@ fn set_default(key: &str, val: impl AsRef<OsStr>) {
     }
 }
 
+/// Append panics to `%LOCALAPPDATA%\com.ratan.app\logs\panic.log` so a crash on
+/// a user's machine leaves a readable message instead of a silent
+/// STATUS_ILLEGAL_INSTRUCTION. Installed first thing in `main` — before the
+/// Tauri `build()` — so even WebView2 / startup failures are captured. (Release
+/// builds run with `windows_subsystem = "windows"`, so there is no console for
+/// the default hook to print to; the log file is the only record.)
+fn install_panic_logger() {
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("com.ratan.app")
+        .join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("panic.log");
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "[unix:{secs}] {info}");
+        }
+        prev(info);
+    }));
+}
+
 fn main() {
+    install_panic_logger();
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -46,6 +76,13 @@ fn main() {
                 }
                 if rd.join("SumatraPDF.exe").exists() {
                     set_default("RATAN_RESOURCE_DIR", &rd);
+                }
+                // Point `ort` (load-dynamic) at the bundled Microsoft ONNX
+                // Runtime DLL. Read lazily on the first passport inference, so
+                // setting it here in `setup` is early enough.
+                let ort_dll = rd.join("onnxruntime.dll");
+                if ort_dll.exists() {
+                    set_default("ORT_DYLIB_PATH", &ort_dll);
                 }
             }
 

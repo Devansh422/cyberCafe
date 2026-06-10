@@ -54,9 +54,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 image = "0.25"
 kamadak-exif = "0.5"
 lopdf = "0.34"
-# ONNX Runtime for MODNet matting + UltraFace detection. `download-binaries`
-# fetches the prebuilt ORT 1.24 lib so no system install is needed.
-ort = { version = "=2.0.0-rc.12", features = ["download-binaries"] }
+# ONNX Runtime for MODNet matting + UltraFace detection.
+#
+# We DON'T use `download-binaries`: pyke's prebuilt libs are compiled with AVX2
+# and crash with STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on CPUs without AVX2
+# (budget Celeron/Pentium, older i3/Xeon — common on café/old machines).
+# Instead, `load-dynamic` loads `onnxruntime.dll` at runtime, and we ship
+# Microsoft's official build, which does runtime CPU dispatch (SSE2 fallback) and
+# runs on any x64 CPU. `api-24` matches the ONNX Runtime 1.24 DLL we bundle; the
+# DLL path is set via ORT_DYLIB_PATH in the Tauri shell before first inference.
+# (`default-features = false` is required, else `download-binaries` still fetches
+# the AVX2 lib and `copy-dylibs` drops it next to the exe.)
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic", "api-24"] }
 
 # --- Phase 3: sidecar proxy ---
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

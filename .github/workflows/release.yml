@@ -74,6 +74,26 @@ jobs:
           Get-ChildItem dist/vcruntime | Format-Table Name, Length
         shell: pwsh
 
+      # Ship Microsoft's OFFICIAL ONNX Runtime DLL instead of ort's
+      # `download-binaries` prebuilt. pyke's prebuilt is AVX2-only and crashes
+      # with STATUS_ILLEGAL_INSTRUCTION (0xc000001d) on CPUs without AVX2 (old /
+      # budget machines). Microsoft's build does runtime CPU dispatch with an
+      # SSE2 fallback, so it runs on any x64 CPU. v1.24.x matches `ort`
+      # 2.0.0-rc.12 (api-24). The app loads it at runtime via ORT_DYLIB_PATH
+      # (set in src-tauri/src/main.rs); see crates/ratan-core/Cargo.toml.
+      - name: Stage Microsoft ONNX Runtime DLL
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $ver = "1.24.4"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$ver/onnxruntime-win-x64-$ver.zip"
+          Invoke-WebRequest $url -OutFile ort.zip
+          Expand-Archive ort.zip -DestinationPath ort -Force
+          $dll = Get-ChildItem ort -Recurse -Filter onnxruntime.dll | Select-Object -First 1
+          if (-not $dll) { throw "onnxruntime.dll not found in $url" }
+          Copy-Item $dll.FullName dist/onnxruntime.dll -Force
+          "{0:N1} MB  dist/onnxruntime.dll" -f ((Get-Item dist/onnxruntime.dll).Length/1MB)
+        shell: pwsh
+
       # tauri-action builds + signs the NSIS installer and, with
       # `createUpdaterArtifacts: true` in tauri.conf.json, also produces and
       # uploads `latest.json` + the `.sig` to the release it creates. It is the
