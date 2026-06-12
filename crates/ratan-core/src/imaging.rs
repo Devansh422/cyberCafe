@@ -20,16 +20,20 @@ pub struct Preset {
     pub sharpen: bool,
     pub brightness: f32,
     pub contrast: f32,
+    /// Invert the tones after the grayscale/brightness/contrast stage — a
+    /// photographic-negative look (white page → black, ink → white).
+    pub invert: bool,
 }
 
 /// Resolve a preset by key (mirrors `PRESETS` in processing/index.js).
 pub fn preset(name: &str) -> Option<Preset> {
     Some(match name {
-        "scan_pdf" => Preset { grayscale: true, sharpen: true, brightness: 1.05, contrast: 1.2 },
-        "bw" => Preset { grayscale: true, sharpen: false, brightness: 1.0, contrast: 1.0 },
-        "color" => Preset { grayscale: false, sharpen: true, brightness: 1.0, contrast: 1.0 },
-        "high_contrast" => Preset { grayscale: true, sharpen: true, brightness: 1.1, contrast: 1.4 },
-        "a4_resize" => Preset { grayscale: false, sharpen: false, brightness: 1.0, contrast: 1.0 },
+        "scan_pdf" => Preset { grayscale: true, sharpen: true, brightness: 1.05, contrast: 1.2, invert: false },
+        "bw" => Preset { grayscale: true, sharpen: false, brightness: 1.0, contrast: 1.0, invert: false },
+        "color" => Preset { grayscale: false, sharpen: true, brightness: 1.0, contrast: 1.0, invert: false },
+        "high_contrast" => Preset { grayscale: true, sharpen: true, brightness: 1.1, contrast: 1.4, invert: false },
+        "a4_resize" => Preset { grayscale: false, sharpen: false, brightness: 1.0, contrast: 1.0, invert: false },
+        "inverted" => Preset { grayscale: true, sharpen: false, brightness: 1.0, contrast: 1.0, invert: true },
         _ => return None,
     })
 }
@@ -91,13 +95,63 @@ pub fn apply_preset_pixels(mut canvas: RgbImage, p: &Preset) -> RgbImage {
             g = y;
             b = y;
         }
-        px.0 = [clamp_u8(r * factor), clamp_u8(g * factor), clamp_u8(b * factor)];
+        let mut out = [clamp_u8(r * factor), clamp_u8(g * factor), clamp_u8(b * factor)];
+        if p.invert {
+            out = [255 - out[0], 255 - out[1], 255 - out[2]];
+        }
+        px.0 = out;
     }
     if p.sharpen {
         image::imageops::unsharpen(&canvas, 1.0, 1)
     } else {
         canvas
     }
+}
+
+/// Rotate an RGB image by `degrees` (clockwise, like CSS `rotate()`) about its
+/// center, expanding the canvas to the rotated bounding box and filling the
+/// uncovered corners with white. Bilinear sampling keeps edges smooth — used by
+/// the collage compositor so the print matches the CSS-rotated live preview.
+pub fn rotate_rgb(src: &RgbImage, degrees: f32) -> RgbImage {
+    let rad = degrees.to_radians();
+    let (sin, cos) = rad.sin_cos();
+    let (w, h) = (src.width() as f32, src.height() as f32);
+    let nw = (w * cos.abs() + h * sin.abs()).ceil().max(1.0) as u32;
+    let nh = (w * sin.abs() + h * cos.abs()).ceil().max(1.0) as u32;
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let (ncx, ncy) = (nw as f32 / 2.0, nh as f32 / 2.0);
+
+    let mut out = RgbImage::from_pixel(nw, nh, Rgb([255, 255, 255]));
+    for (x, y, px) in out.enumerate_pixels_mut() {
+        // Inverse-rotate the destination pixel back into source space.
+        let dx = x as f32 + 0.5 - ncx;
+        let dy = y as f32 + 0.5 - ncy;
+        let sx = dx * cos + dy * sin + cx - 0.5;
+        let sy = -dx * sin + dy * cos + cy - 0.5;
+        if sx < -0.5 || sy < -0.5 || sx > w - 0.5 || sy > h - 0.5 {
+            continue; // stays white
+        }
+        // Bilinear sample, clamping to the image edge (white blend at borders
+        // would fringe; clamping matches how browsers rasterize the preview).
+        let x0 = sx.floor().clamp(0.0, w - 1.0);
+        let y0 = sy.floor().clamp(0.0, h - 1.0);
+        let x1 = (x0 + 1.0).min(w - 1.0);
+        let y1 = (y0 + 1.0).min(h - 1.0);
+        let fx = (sx - x0).clamp(0.0, 1.0);
+        let fy = (sy - y0).clamp(0.0, 1.0);
+        let p00 = src.get_pixel(x0 as u32, y0 as u32).0;
+        let p10 = src.get_pixel(x1 as u32, y0 as u32).0;
+        let p01 = src.get_pixel(x0 as u32, y1 as u32).0;
+        let p11 = src.get_pixel(x1 as u32, y1 as u32).0;
+        let mut o = [0u8; 3];
+        for c in 0..3 {
+            let top = p00[c] as f32 * (1.0 - fx) + p10[c] as f32 * fx;
+            let bot = p01[c] as f32 * (1.0 - fx) + p11[c] as f32 * fx;
+            o[c] = clamp_u8(top * (1.0 - fy) + bot * fy);
+        }
+        px.0 = o;
+    }
+    out
 }
 
 /// Run the preset pipeline and return a single-page A4 PDF.

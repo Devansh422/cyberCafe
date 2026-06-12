@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod imaging;
 pub mod media;
+pub mod paper;
 pub mod passport;
 pub mod pdf;
 pub mod print;

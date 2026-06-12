@@ -28,6 +28,7 @@ pub fn router() -> Router<SharedState> {
         .route("/:id/file", get(get_file))
         .route("/:id/save", post(save_to_pc))
         .route("/:id/process", post(process))
+        .route("/:id/detect-page", post(detect_page))
         .route("/:id/print", post(print_job))
         .route("/batch/:batch_id/process", post(batch_process))
         .route("/batch/:batch_id/print", post(batch_print))
@@ -143,6 +144,49 @@ async fn process(State(st): State<SharedState>, Path(id): Path<i64>, body: Bytes
     Ok(Json(job))
 }
 
+/// Detect the sheet of paper in this job's photo and replace the job's source
+/// with the perspective-corrected crop (the original file stays on disk). The
+/// job drops back to `incoming` so the operator re-processes with a preset.
+async fn detect_page(State(st): State<SharedState>, Path(id): Path<i64>) -> AppResult<Json<jobs::Job>> {
+    let job = st.db.with(|c| jobs::get_job(c, id))?.ok_or(AppError::NotFound)?;
+    if job.job_type.as_deref() != Some("image") {
+        return Err(AppError::bad("page detection works on photos (images) only"));
+    }
+    let src = media::absolute_path(&st.config, &job.storage_folder, &job.filename);
+    if !src.exists() {
+        return Err(AppError::internal("source image file missing"));
+    }
+    let bytes = tokio::fs::read(&src).await?;
+    let cropped = tokio::task::spawn_blocking(move || crate::paper::detect_and_crop_page(&bytes))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+        .map_err(|e| AppError::bad(e.to_string()))?;
+
+    // Write next to the original under a new name so re-running stays lossless
+    // (each crop starts from the job's current file, originals are kept).
+    let stem = job.filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(&job.filename);
+    let dest_name = format!("{stem}.page.jpg");
+    let dest = media::absolute_path(&st.config, &job.storage_folder, &dest_name);
+    tokio::fs::write(&dest, &cropped.jpeg).await?;
+
+    let size = cropped.jpeg.len() as i64;
+    let updated = st.db.with(|c| {
+        let j = jobs::update_job(
+            c,
+            id,
+            &jobs::JobPatch {
+                filename: Some(dest_name.clone()),
+                size: Some(size),
+                status: Some("incoming".into()),
+                ..Default::default()
+            },
+        );
+        activity::log(c, Some(id), "page_cropped", Some(&format!("Page detected & cropped → {dest_name} ({}×{})", cropped.width, cropped.height)));
+        j
+    })?;
+    updated.map(Json).ok_or(AppError::NotFound)
+}
+
 /// Copy this job's file into the user's Downloads folder under a readable
 /// `{customer}_{date}_{original}` name. Returns the saved path so the UI can
 /// confirm it.
@@ -191,6 +235,11 @@ struct CollageItemBody {
     pan_x: Option<f32>,
     #[serde(rename = "panY")]
     pan_y: Option<f32>,
+    rotation: Option<f32>,
+    #[serde(rename = "flipH")]
+    flip_h: Option<bool>,
+    #[serde(rename = "flipV")]
+    flip_v: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -199,6 +248,7 @@ struct CollageBody {
     layout: String,
     #[serde(default)]
     items: Vec<CollageItemBody>,
+    guides: Option<bool>,
 }
 
 async fn collage(State(st): State<SharedState>, body: Bytes) -> AppResult<Response> {
@@ -214,9 +264,12 @@ async fn collage(State(st): State<SharedState>, body: Bytes) -> AppResult<Respon
             zoom: it.zoom.unwrap_or(1.0),
             pan_x: it.pan_x.unwrap_or(0.0),
             pan_y: it.pan_y.unwrap_or(0.0),
+            rotation: it.rotation.unwrap_or(0.0),
+            flip_h: it.flip_h.unwrap_or(false),
+            flip_v: it.flip_v.unwrap_or(false),
         })
         .collect();
-    let job = processing::make_collage(&st, &b.layout, &items).await?;
+    let job = processing::make_collage(&st, &b.layout, items, b.guides.unwrap_or(true)).await?;
     Ok((StatusCode::CREATED, Json(job)).into_response())
 }
 

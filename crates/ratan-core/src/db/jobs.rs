@@ -92,6 +92,8 @@ pub struct NewJob {
 /// outer Option only, matching how the JS only ever sets concrete values.
 #[derive(Debug, Default, Clone)]
 pub struct JobPatch {
+    pub filename: Option<String>,
+    pub size: Option<i64>,
     pub status: Option<String>,
     pub processed_path: Option<String>,
     pub storage_folder: Option<String>,
@@ -217,6 +219,8 @@ pub fn update_job(conn: &Connection, id: i64, patch: &JobPatch) -> rusqlite::Res
         };
     }
 
+    set_opt!(patch.filename, "filename", Value::from);
+    set_opt!(patch.size, "size", Value::from);
     set_opt!(patch.status, "status", Value::from);
     set_opt!(patch.processed_path, "processed_path", Value::from);
     set_opt!(patch.storage_folder, "storage_folder", Value::from);

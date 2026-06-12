@@ -40,10 +40,15 @@ export const api = {
   deleteBatch: (batchId) => request(`/jobs/batch/${batchId}`, { method: 'DELETE' }),
   mergeJobs: (ids, preset = 'scan_pdf') =>
     request('/jobs/merge', { method: 'POST', body: JSON.stringify({ ids, preset }) }),
-  // Compose two photos onto one A4 page (horizontal | vertical) for ID prints.
-  // items: [{ id, zoom, panX, panY }, …] (exactly 2).
-  makeCollage: (layout, items) =>
-    request('/jobs/collage', { method: 'POST', body: JSON.stringify({ layout, items }) }),
+  // Compose two photos onto the top half of one A4 page (horizontal | vertical)
+  // for ID prints. items: [{ id, zoom, panX, panY, rotation, flipH, flipV }, …]
+  // (exactly 2); guides toggles the printed dashed cut lines.
+  makeCollage: (layout, items, guides = true) =>
+    request('/jobs/collage', { method: 'POST', body: JSON.stringify({ layout, items, guides }) }),
+  // Detect the sheet of paper in a photo and replace the job's source with the
+  // perspective-corrected crop (job returns to "incoming" for re-processing).
+  detectPage: (id, signal) =>
+    request(`/jobs/${id}/detect-page`, { method: 'POST', signal }),
   health: () => request('/health'),
   status: () => request('/system/status'),
   qr: () => request('/system/whatsapp/qr'),

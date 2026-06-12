@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
-import { Sparkles, Printer, Layers, Wand2, Ban, RefreshCw } from 'lucide-react';
+import { Sparkles, Printer, Layers, Wand2, Ban, RefreshCw, Crop } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Spinner } from './Spinner';
 
@@ -11,6 +11,7 @@ const PRESETS = [
   { id: 'color', label: 'Color' },
   { id: 'high_contrast', label: 'High Contrast' },
   { id: 'a4_resize', label: 'A4 Resize' },
+  { id: 'inverted', label: 'Inverted' },
 ];
 
 const LABEL = 'text-xs font-semibold text-text-secondary uppercase tracking-wide';
@@ -125,6 +126,16 @@ export function ControlPanel({ jobs = [], batchId = null, onChange, onClose }) {
     });
   }
 
+  // Photos only: find the sheet of paper in each image and crop/straighten it.
+  // The job's source is replaced by the crop and drops back to "incoming", so
+  // the operator then processes it with a preset as usual.
+  const imageJobs = jobs.filter((j) => j.type === 'image');
+  function doDetectPage() {
+    run('crop', async (signal) => {
+      for (const j of imageJobs) await api.detectPage(j.id, signal);
+    });
+  }
+
   // Re-render an already-processed item (e.g. after changing the preset),
   // overriding the "print" mode the status would otherwise force.
   function doReprocess() {
@@ -180,6 +191,34 @@ export function ControlPanel({ jobs = [], batchId = null, onChange, onClose }) {
           })}
         </div>
       </div>
+
+      {/* Paper edge detection — photos only. Finds the page in the photo and
+          replaces the source with a straightened crop, like a scanner app. */}
+      {imageJobs.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={doDetectPage}
+            className="flex items-center justify-center gap-2 text-sm font-semibold rounded-pill"
+            style={{
+              padding: '10px 16px',
+              background: 'var(--color-bg-overlay)',
+              color: 'var(--color-text-primary)',
+              border: '1px solid var(--color-border)',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {busy === 'crop' ? <Spinner size={14} /> : <Crop size={14} />}
+            {busy === 'crop'
+              ? 'Detecting page…'
+              : `Detect & crop page${imageJobs.length > 1 ? ` (${imageJobs.length} photos)` : ''}`}
+          </button>
+          <span className="text-xs text-text-secondary">
+            Auto-finds the paper edges in the photo and straightens the crop.
+          </span>
+        </div>
+      )}
 
       {/* Printer + copies */}
       <div className="grid grid-cols-2 gap-3">

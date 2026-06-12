@@ -1,32 +1,36 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { X, Check, Images, RotateCcw, ImageIcon } from 'lucide-react';
+import { X, Check, Images, RotateCcw, RotateCw, FlipHorizontal2, FlipVertical2, ImageIcon } from 'lucide-react';
 import { api, fileUrl } from '@/lib/api';
 import { Avatar } from './Avatar';
 import { Spinner } from './Spinner';
 
-// Cell rectangles as page fractions [x, y, w, h] (top-down). MUST stay in sync
-// with `collage_cells` in crates/ratan-core/src/processing.rs so the live
+// Cell rectangles as page fractions [x, y, w, h] (top-down). Both photos live
+// in the TOP HALF of the A4 page — the bottom half stays blank. MUST stay in
+// sync with `collage_cells` in crates/ratan-core/src/processing.rs so the live
 // preview matches the generated PDF.
 const COLLAGE_CELLS = {
-  vertical: [[0.06, 0.05, 0.88, 0.42], [0.06, 0.53, 0.88, 0.42]],
-  horizontal: [[0.05, 0.06, 0.43, 0.88], [0.52, 0.06, 0.43, 0.88]],
+  vertical: [[0.06, 0.045, 0.88, 0.205], [0.06, 0.275, 0.88, 0.205]],
+  horizontal: [[0.05, 0.045, 0.43, 0.435], [0.52, 0.045, 0.43, 0.435]],
 };
 
-const DEFAULT_TF = { zoom: 1, panX: 0, panY: 0 };
+const DEFAULT_TF = { zoom: 1, panX: 0, panY: 0, rotation: 0, flipH: false, flipV: false };
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-// Tiny inline glyphs for the layout toggle (two boxes stacked vs side-by-side).
+// Tiny inline glyphs for the layout toggle — both variants sit in the top half
+// of the page, mirroring the real A4 placement.
 function LayoutGlyph({ kind }) {
   return kind === 'vertical' ? (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-      <rect x="2" y="2" width="12" height="5" rx="1" />
-      <rect x="2" y="9" width="12" height="5" rx="1" />
+      <rect x="2" y="1.5" width="12" height="2.8" rx="0.8" />
+      <rect x="2" y="5.3" width="12" height="2.8" rx="0.8" />
+      <rect x="2" y="9.5" width="12" height="5" rx="0.8" opacity="0.15" />
     </svg>
   ) : (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-      <rect x="2" y="2" width="5" height="12" rx="1" />
-      <rect x="9" y="2" width="5" height="12" rx="1" />
+      <rect x="2" y="1.5" width="5.6" height="6.6" rx="0.8" />
+      <rect x="8.4" y="1.5" width="5.6" height="6.6" rx="0.8" />
+      <rect x="2" y="9.5" width="12" height="5" rx="0.8" opacity="0.15" />
     </svg>
   );
 }
@@ -34,7 +38,7 @@ function LayoutGlyph({ kind }) {
 // One photo placed inside its A4 cell. translate is in % of the element (which
 // fills the cell), so panX/panY of ±1 shifts by half a cell — matching the
 // server's `pan * (cell/2)`. object-fit:contain gives the same baseline scale.
-function CollageCell({ rect, id, tf, onPan }) {
+function CollageCell({ rect, id, tf, onPan, guides }) {
   const [fx, fy, fw, fh] = rect;
   const drag = useRef(null);
 
@@ -71,7 +75,7 @@ function CollageCell({ rect, id, tf, onPan }) {
         height: `${fh * 100}%`,
         overflow: 'hidden',
         background: 'var(--color-bg-overlay)',
-        border: '1px dashed var(--color-border)',
+        border: guides ? '1px dashed var(--color-border)' : '1px dashed transparent',
         cursor: 'grab',
         touchAction: 'none',
       }}
@@ -87,7 +91,9 @@ function CollageCell({ rect, id, tf, onPan }) {
           width: '100%',
           height: '100%',
           objectFit: 'contain',
-          transform: `translate(${tf.panX * 50}%, ${tf.panY * 50}%) scale(${tf.zoom})`,
+          // Keep this pipeline in sync with `compose_collage` in
+          // processing.rs: rotate, then flip (negative scale), then pan.
+          transform: `translate(${tf.panX * 50}%, ${tf.panY * 50}%) scale(${tf.flipH ? -tf.zoom : tf.zoom}, ${tf.flipV ? -tf.zoom : tf.zoom}) rotate(${tf.rotation}deg)`,
           transformOrigin: 'center',
           pointerEvents: 'none',
           userSelect: 'none',
@@ -107,6 +113,7 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
   const [selected, setSelected] = useState([]); // ordered [id, id]
   const [transforms, setTransforms] = useState([{ ...DEFAULT_TF }, { ...DEFAULT_TF }]);
   const [layout, setLayout] = useState('vertical');
+  const [guides, setGuides] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -150,8 +157,11 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
         zoom: transforms[i].zoom,
         panX: transforms[i].panX,
         panY: transforms[i].panY,
+        rotation: transforms[i].rotation,
+        flipH: transforms[i].flipH,
+        flipV: transforms[i].flipV,
       }));
-      const job = await api.makeCollage(layout, items);
+      const job = await api.makeCollage(layout, items, guides);
       await onCreated?.(job);
     } catch (e) {
       setErr(e.message || 'Could not create collage');
@@ -281,17 +291,20 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                     rect={cells[i]}
                     id={id}
                     tf={transforms[i]}
+                    guides={guides}
                     onPan={(panX, panY) => setSlot(i, { panX, panY })}
                   />
                 ))}
-                {/* Cut hint between the two halves */}
-                <div
-                  style={
-                    layout === 'vertical'
-                      ? { position: 'absolute', left: '4%', right: '4%', top: '50%', borderTop: '1px dashed var(--color-text-muted)' }
-                      : { position: 'absolute', top: '4%', bottom: '4%', left: '50%', borderLeft: '1px dashed var(--color-text-muted)' }
-                  }
-                />
+                {/* Cut hint between the two cells (both live in the top half) */}
+                {guides && (
+                  <div
+                    style={
+                      layout === 'vertical'
+                        ? { position: 'absolute', left: '4%', right: '4%', top: '26.25%', borderTop: '1px dashed var(--color-text-muted)' }
+                        : { position: 'absolute', top: '3%', height: '46.5%', left: '50%', borderLeft: '1px dashed var(--color-text-muted)' }
+                    }
+                  />
+                )}
               </div>
             </div>
 
@@ -323,10 +336,24 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                     );
                   })}
                 </div>
+                <label className="flex items-center gap-2 text-xs text-text-secondary select-none" style={{ cursor: 'pointer' }}>
+                  <input type="checkbox" checked={guides} onChange={(e) => setGuides(e.target.checked)} />
+                  Print dashed cut guides around each photo
+                </label>
               </div>
 
               {selected.map((id, i) => {
                 const job = photos.find((j) => j.id === id);
+                const tf = transforms[i];
+                const toolBtn = (active) => ({
+                  padding: '6px 10px',
+                  background: active ? 'var(--color-brand)' : 'var(--color-bg-surface)',
+                  color: active ? 'var(--color-brand-fg)' : 'var(--color-text-secondary)',
+                  border: '1px solid',
+                  borderColor: active ? 'var(--color-brand)' : 'var(--color-border)',
+                  borderRadius: 8,
+                  cursor: 'pointer',
+                });
                 return (
                   <div key={id} className="flex flex-col gap-2" style={{ background: 'var(--color-bg-overlay)', borderRadius: 12, padding: 12 }}>
                     <div className="flex items-center gap-2">
@@ -339,7 +366,7 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                       <button
                         type="button"
                         onClick={() => resetSlot(i)}
-                        title="Reset position"
+                        title="Reset position, zoom, rotation and flips"
                         className="ml-auto flex items-center gap-1 text-xs font-medium text-text-secondary"
                         style={{ background: 'none', border: 'none', cursor: 'pointer' }}
                       >
@@ -353,18 +380,70 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                         min={0.3}
                         max={3}
                         step={0.02}
-                        value={transforms[i].zoom}
+                        value={tf.zoom}
                         onChange={(e) => setSlot(i, { zoom: parseFloat(e.target.value) })}
                         style={{ flex: 1 }}
                       />
-                      <span style={{ width: 38, textAlign: 'right' }}>{Math.round(transforms[i].zoom * 100)}%</span>
+                      <span style={{ width: 38, textAlign: 'right' }}>{Math.round(tf.zoom * 100)}%</span>
                     </label>
+                    <label className="flex items-center gap-2 text-xs text-text-secondary">
+                      Rotate
+                      <input
+                        type="range"
+                        min={-180}
+                        max={180}
+                        step={1}
+                        value={tf.rotation}
+                        onChange={(e) => setSlot(i, { rotation: parseInt(e.target.value, 10) })}
+                        style={{ flex: 1 }}
+                      />
+                      <span style={{ width: 38, textAlign: 'right' }}>{tf.rotation}°</span>
+                    </label>
+                    <div className="flex gap-2 text-xs font-medium">
+                      <button
+                        type="button"
+                        title="Rotate 90° anticlockwise"
+                        onClick={() => setSlot(i, { rotation: tf.rotation - 90 < -180 ? tf.rotation + 270 : tf.rotation - 90 })}
+                        className="flex items-center gap-1"
+                        style={toolBtn(false)}
+                      >
+                        <RotateCcw size={13} /> 90°
+                      </button>
+                      <button
+                        type="button"
+                        title="Rotate 90° clockwise"
+                        onClick={() => setSlot(i, { rotation: tf.rotation + 90 > 180 ? tf.rotation - 270 : tf.rotation + 90 })}
+                        className="flex items-center gap-1"
+                        style={toolBtn(false)}
+                      >
+                        <RotateCw size={13} /> 90°
+                      </button>
+                      <button
+                        type="button"
+                        title="Flip horizontally (mirror)"
+                        onClick={() => setSlot(i, { flipH: !tf.flipH })}
+                        className="flex items-center gap-1"
+                        style={toolBtn(tf.flipH)}
+                      >
+                        <FlipHorizontal2 size={13} /> Flip
+                      </button>
+                      <button
+                        type="button"
+                        title="Flip vertically"
+                        onClick={() => setSlot(i, { flipV: !tf.flipV })}
+                        className="flex items-center gap-1"
+                        style={toolBtn(tf.flipV)}
+                      >
+                        <FlipVertical2 size={13} /> Flip
+                      </button>
+                    </div>
                   </div>
                 );
               })}
 
               <p className="text-xs text-text-secondary" style={{ lineHeight: 1.5 }}>
-                Tip: drag a photo in the preview to slide it. The dashed line shows where to cut after printing.
+                Tip: drag a photo in the preview to slide it; use the sliders to zoom and straighten it.
+                Both photos print on the top half of the A4 — the dashed lines show where to cut.
                 After you create it, pick a preset (e.g. <b>High Contrast</b> for a scanned look) and print.
               </p>
 

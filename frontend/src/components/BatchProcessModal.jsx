@@ -14,6 +14,7 @@ const PRESETS = [
   { id: 'color', label: 'Color' },
   { id: 'high_contrast', label: 'High Contrast' },
   { id: 'a4_resize', label: 'A4 Resize' },
+  { id: 'inverted', label: 'Inverted' },
 ];
 
 // One selectable item in the batch. Clicking the card toggles it; the preview

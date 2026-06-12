@@ -148,16 +148,30 @@ export default function PassportPage() {
     if (fileRef.current) fileRef.current.value = '';
   }
 
-  // Pull selected WhatsApp incoming images in as passport sources.
-  async function addFromJobs(jobIds) {
+  // Pull selected WhatsApp incoming images in as passport sources. The source
+  // modal already ran the pipeline while picking (it shows the processed
+  // preview), so entries usually arrive prepared and appear instantly; any
+  // that failed in the modal are prepared here as a fallback.
+  async function addFromJobs(entries) {
     setSourceOpen(false);
-    if (!jobIds?.length) return;
+    if (!entries?.length) return;
     setErr(null);
-    const seeded = jobIds.map((jobId) => ({
-      uid: ++localSeq, name: `WhatsApp #${jobId}`, jobId, id: null, previewUrl: null, matted: null, preparing: true, copies: 1, error: null,
+    const seeded = entries.map(({ jobId, prepared }) => ({
+      uid: ++localSeq,
+      name: prepared?.label || `WhatsApp #${jobId}`,
+      jobId,
+      id: prepared?.id || null,
+      previewUrl: prepared ? passportPreviewUrl(prepared.id) : null,
+      matted: prepared ? prepared.matted : null,
+      subjectFound: prepared?.subjectFound,
+      faceDetected: prepared?.faceDetected,
+      preparing: !prepared,
+      copies: 1,
+      error: null,
     }));
     setPhotos((prev) => [...prev, ...seeded]);
-    await runPrepare(seeded, bg);
+    const pending = seeded.filter((p) => p.preparing);
+    if (pending.length) await runPrepare(pending, bg);
   }
 
   // Changing the background re-runs removal on every photo with the new colour.
@@ -498,6 +512,7 @@ export default function PassportPage() {
 
       {sourceOpen && (
         <PassportSourceModal
+          bg={bg}
           onClose={() => setSourceOpen(false)}
           onConfirm={addFromJobs}
         />

@@ -17,7 +17,12 @@ const STATUS_TONE = {
 
 function ItemPreview({ job }) {
   const showProcessed = ['processed', 'printed', 'printing'].includes(job.status);
-  const previewUrl = fileUrl(job.id, showProcessed && job.processed_path);
+  const processed = showProcessed && job.processed_path;
+  // Cache-bust on the source filename + preset: "Detect & crop page" swaps the
+  // job's file and re-processing swaps the PDF, but the /file URL stays the
+  // same, so the WebView would otherwise keep showing the stale preview.
+  const version = encodeURIComponent(`${job.filename || ''}:${job.preset || ''}`);
+  const previewUrl = `${fileUrl(job.id, processed)}${processed ? '&' : '?'}v=${version}`;
   const isImage = job.type === 'image' && !showProcessed;
   const tone = STATUS_TONE[job.status] || STATUS_TONE.incoming;
 

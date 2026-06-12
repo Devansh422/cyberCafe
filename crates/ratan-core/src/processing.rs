@@ -14,7 +14,7 @@ use crate::{imaging, pdf, proc};
 use crate::state::SharedState;
 
 /// Preset keys, in the order `processing.presetList()` returned them.
-pub const PRESETS: [&str; 5] = ["scan_pdf", "bw", "color", "high_contrast", "a4_resize"];
+pub const PRESETS: [&str; 6] = ["scan_pdf", "bw", "color", "high_contrast", "a4_resize", "inverted"];
 
 pub fn preset_list() -> Vec<&'static str> {
     PRESETS.to_vec()
@@ -188,28 +188,36 @@ pub async fn merge_jobs_to_pdf(state: &SharedState, ids: &[i64], preset: &str) -
 
 /// One photo's placement in the collage. `zoom` multiplies the contain-fit
 /// scale (1.0 = whole photo visible); `pan_x`/`pan_y` shift it within its cell
-/// as a fraction of half the cell (0 = centered, ±1 = shifted by half a cell).
+/// as a fraction of half the cell (0 = centered, ±1 = shifted by half a cell);
+/// `rotation` is degrees clockwise about the cell center; `flip_h`/`flip_v`
+/// mirror the photo. Matches the CSS transform the editor preview applies.
 pub struct CollageItem {
     pub id: i64,
     pub zoom: f32,
     pub pan_x: f32,
     pub pan_y: f32,
+    pub rotation: f32,
+    pub flip_h: bool,
+    pub flip_v: bool,
 }
 
-/// Cell rectangles as page fractions [x, y, w, h] (top-down origin). MUST stay
-/// in sync with `COLLAGE_CELLS` in the frontend so the preview matches output.
+/// Cell rectangles as page fractions [x, y, w, h] (top-down origin). Both
+/// photos sit in the TOP HALF of the A4 page (the bottom half stays blank for
+/// stamps/signatures or to fold the sheet). MUST stay in sync with
+/// `COLLAGE_CELLS` in the frontend so the preview matches output.
 fn collage_cells(layout: &str) -> [[f64; 4]; 2] {
     match layout {
-        "horizontal" => [[0.05, 0.06, 0.43, 0.88], [0.52, 0.06, 0.43, 0.88]],
-        // "vertical" (default): stacked top/bottom — the usual ID front/back sheet.
-        _ => [[0.06, 0.05, 0.88, 0.42], [0.06, 0.53, 0.88, 0.42]],
+        // Side by side in the top half — two portrait cells.
+        "horizontal" => [[0.05, 0.045, 0.43, 0.435], [0.52, 0.045, 0.43, 0.435]],
+        // "vertical" (default): stacked in the top half — the usual ID front/back sheet.
+        _ => [[0.06, 0.045, 0.88, 0.205], [0.06, 0.275, 0.88, 0.205]],
     }
 }
 
 /// Compose the two oriented photos onto a single white A4 page per `layout`,
-/// honoring each photo's zoom/pan, and return the page as a one-page PDF with
-/// light cut-guides around each cell.
-fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, f32, f32, f32)>) -> anyhow::Result<Vec<u8>> {
+/// honoring each photo's zoom/pan/rotation/flip, and return the page as a JPEG
+/// with light cut-guides around each cell (unless `guides` is off).
+fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, CollageItem)>, guides: bool) -> anyhow::Result<Vec<u8>> {
     use image::imageops::{overlay, resize, FilterType};
     use image::{GenericImageView, Rgb, RgbImage};
 
@@ -217,7 +225,7 @@ fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, f32, f32, f32)
     let mut canvas = RgbImage::from_pixel(aw, ah, Rgb([255, 255, 255]));
     let cells = collage_cells(layout);
 
-    for (i, (img, zoom, pan_x, pan_y)) in items.into_iter().enumerate() {
+    for (i, (img, it)) in items.into_iter().enumerate() {
         let [fx, fy, fw, fh] = cells[i];
         let cw = (fw * aw as f64).round().max(1.0) as u32;
         let ch = (fh * ah as f64).round().max(1.0) as u32;
@@ -226,25 +234,43 @@ fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, f32, f32, f32)
 
         let (iw, ih) = img.dimensions();
         let s_contain = (cw as f32 / iw as f32).min(ch as f32 / ih as f32);
-        let scale = (s_contain * zoom).max(0.001);
+        let scale = (s_contain * it.zoom).max(0.001);
         let sw = ((iw as f32 * scale).round() as u32).max(1);
         let sh = ((ih as f32 * scale).round() as u32).max(1);
-        let scaled = resize(&img.to_rgb8(), sw, sh, FilterType::Lanczos3);
+        let mut scaled = resize(&img.to_rgb8(), sw, sh, FilterType::Lanczos3);
 
-        // Center the scaled photo in its cell, then apply the pan, and overlay
-        // onto a per-cell canvas so anything outside the cell is clipped.
+        // Mirror the CSS pipeline `translate(pan) scale(±zoom) rotate(deg)`:
+        // content is rotated first, then flipped, then panned. Uniform scaling
+        // commutes with rotation, so resizing first is equivalent and cheaper.
+        if it.rotation.rem_euclid(360.0) != 0.0 {
+            scaled = imaging::rotate_rgb(&scaled, it.rotation);
+        }
+        if it.flip_h {
+            scaled = image::imageops::flip_horizontal(&scaled);
+        }
+        if it.flip_v {
+            scaled = image::imageops::flip_vertical(&scaled);
+        }
+        let (sw, sh) = (scaled.width(), scaled.height());
+
+        // Center the photo in its cell, then apply the pan, and overlay onto a
+        // per-cell canvas so anything outside the cell is clipped.
         let mut cell = RgbImage::from_pixel(cw, ch, Rgb([255, 255, 255]));
-        let dx = ((cw as f32 - sw as f32) / 2.0 + pan_x * (cw as f32 / 2.0)).round() as i64;
-        let dy = ((ch as f32 - sh as f32) / 2.0 + pan_y * (ch as f32 / 2.0)).round() as i64;
+        let dx = ((cw as f32 - sw as f32) / 2.0 + it.pan_x * (cw as f32 / 2.0)).round() as i64;
+        let dy = ((ch as f32 - sh as f32) / 2.0 + it.pan_y * (ch as f32 / 2.0)).round() as i64;
         overlay(&mut cell, &scaled, dx, dy);
         overlay(&mut canvas, &cell, cx, cy);
 
-        // Draw dashed guide on canvas
+        if !guides {
+            continue;
+        }
+
+        // Draw dashed cut-guide on canvas
         let x0 = cx as i32;
         let y0 = cy as i32;
         let x1 = (cx + cw as i64) as i32 - 1;
         let y1 = (cy + ch as i64) as i32 - 1;
-        
+
         let color = Rgb([200, 200, 200]);
         let dash_len = 20;
         for x in x0..=x1 {
@@ -268,15 +294,15 @@ fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, f32, f32, f32)
 
 /// Build a 2-photo collage (horizontal or vertical) and register it as a new
 /// processed PDF job, ready to print or save — for double-sided ID prints.
-pub async fn make_collage(state: &SharedState, layout: &str, items: &[CollageItem]) -> AppResult<Job> {
+pub async fn make_collage(state: &SharedState, layout: &str, items: Vec<CollageItem>, guides: bool) -> AppResult<Job> {
     if items.len() != 2 {
         return Err(AppError::bad("a collage needs exactly 2 photos"));
     }
 
-    let mut loaded: Vec<(image::DynamicImage, f32, f32, f32)> = Vec::new();
+    let mut loaded: Vec<(image::DynamicImage, CollageItem)> = Vec::new();
     let mut first_name = None;
     let mut first_phone = None;
-    for (idx, it) in items.iter().enumerate() {
+    for (idx, it) in items.into_iter().enumerate() {
         let job = state
             .db
             .with(|c| jobs::get_job(c, it.id))?
@@ -294,12 +320,12 @@ pub async fn make_collage(state: &SharedState, layout: &str, items: &[CollageIte
             first_name = job.customer_name.clone();
             first_phone = job.customer_phone.clone();
         }
-        loaded.push((img, it.zoom, it.pan_x, it.pan_y));
+        loaded.push((img, it));
     }
 
     let layout_owned = if layout == "horizontal" { "horizontal".to_string() } else { "vertical".to_string() };
     let layout_for_blocking = layout_owned.clone();
-    let jpeg_bytes = tokio::task::spawn_blocking(move || compose_collage(&layout_for_blocking, loaded))
+    let jpeg_bytes = tokio::task::spawn_blocking(move || compose_collage(&layout_for_blocking, loaded, guides))
         .await
         .map_err(|e| AppError::internal(e.to_string()))??;
 
