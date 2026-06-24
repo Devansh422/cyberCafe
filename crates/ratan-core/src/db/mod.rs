@@ -56,7 +56,29 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
 
 /// Recreate the exact schema from `backend/src/db/index.js:46-101`.
 fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // Performance-critical PRAGMAs applied before the schema so they cover all
+    // subsequent statements in this connection's lifetime.
+    //
+    // WAL: writers never block readers, commits are asynchronous (the WAL file
+    //   is synced lazily), and checkpointing happens in the background.
+    // synchronous=NORMAL: safe with WAL (we only lose the last un-checkpointed
+    //   WAL writes if the OS crashes, which is acceptable for a desktop app).
+    // busy_timeout: retry for up to 5 s instead of returning SQLITE_BUSY
+    //   immediately — makes the Mutex overhead invisible to callers.
+    // cache_size: allow SQLite to keep 8 MB of pages in its own page cache,
+    //   avoiding repeated disk reads for hot rows (job list, activity log).
+    // mmap_size: memory-map up to 64 MB of the db file so sequential scans
+    //   go through the OS page cache instead of pread() syscalls.
+    // temp_store=MEMORY: sort and group-by operations use RAM, not tmp files.
+    conn.execute_batch(
+        "PRAGMA journal_mode    = WAL;
+         PRAGMA synchronous     = NORMAL;
+         PRAGMA busy_timeout    = 5000;
+         PRAGMA cache_size      = -8000;
+         PRAGMA mmap_size       = 67108864;
+         PRAGMA temp_store      = MEMORY;
+         PRAGMA foreign_keys    = ON;",
+    )?;
 
     conn.execute_batch(
         r#"

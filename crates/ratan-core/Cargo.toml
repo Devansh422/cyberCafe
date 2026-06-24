@@ -70,6 +70,13 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "
 # --- Phase 3: sidecar proxy ---
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "imaging"
+harness = false
+
 [target.'cfg(windows)'.dependencies]
 # Used to spawn child processes (PowerShell, SumatraPDF, taskkill) with
 # CREATE_NO_WINDOW so no console window flashes — the win-exec.js behavior.

@@ -5,8 +5,8 @@ import { SectionHeader } from '@/components/SectionHeader';
 import { TaskCard } from '@/components/TaskCard';
 
 export default function QueuePage() {
-  const { data, mutate } = useSWR('/system/status', api.fetcher, { refreshInterval: 2000 });
-  const { data: jobs } = useSWR('/jobs', api.fetcher, { refreshInterval: 2000 });
+  const { data, mutate } = useSWR('/system/status', api.fetcher, { refreshInterval: 3000 });
+  const { data: jobs } = useSWR('/jobs', api.fetcher, { refreshInterval: 3000 });
 
   const queue = data?.queue || [];
   const printing = (jobs?.jobs || []).filter((j) => j.status === 'printing');

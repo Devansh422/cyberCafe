@@ -237,7 +237,7 @@ fn compose_collage(layout: &str, items: Vec<(image::DynamicImage, CollageItem)>,
         let scale = (s_contain * it.zoom).max(0.001);
         let sw = ((iw as f32 * scale).round() as u32).max(1);
         let sh = ((ih as f32 * scale).round() as u32).max(1);
-        let mut scaled = resize(&img.to_rgb8(), sw, sh, FilterType::Lanczos3);
+        let mut scaled = resize(&img.to_rgb8(), sw, sh, FilterType::CatmullRom);
 
         // Mirror the CSS pipeline `translate(pan) scale(±zoom) rotate(deg)`:
         // content is rotated first, then flipped, then panned. Uniform scaling

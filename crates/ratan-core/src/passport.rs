@@ -744,7 +744,7 @@ fn cover_resize(img: &RgbImage, ow: u32, oh: u32) -> RgbImage {
     let scale = (ow as f32 / w).max(oh as f32 / h);
     let nw = (w * scale).round().max(ow as f32) as u32;
     let nh = (h * scale).round().max(oh as f32) as u32;
-    let resized = imageops::resize(img, nw, nh, imageops::FilterType::Lanczos3);
+    let resized = imageops::resize(img, nw, nh, imageops::FilterType::CatmullRom);
     let x = (nw - ow) / 2;
     let y = (nh - oh) / 2;
     imageops::crop_imm(&resized, x, y, ow, oh).to_image()
@@ -795,7 +795,7 @@ pub async fn prepare(state: &SharedState, buffer: Vec<u8>, bg: Option<String>, r
         let (w, h) = (img.width(), img.height());
         let scale = (COMPOSITE_MAX as f32 / w as f32).min(COMPOSITE_MAX as f32 / h as f32).min(1.0);
         let mut fg = if scale < 1.0 {
-            imageops::resize(&img.to_rgb8(), ((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1), imageops::FilterType::Lanczos3)
+            imageops::resize(&img.to_rgb8(), ((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1), imageops::FilterType::CatmullRom)
         } else {
             img.to_rgb8()
         };

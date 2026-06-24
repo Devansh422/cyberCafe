@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=optional');
 
 @tailwind base;
 @tailwind components;
@@ -92,6 +92,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed !important; }
   border-radius: 999px;
   animation: statusPulse 1.6s ease-out infinite;
   pointer-events: none;
+  will-change: transform, opacity;
 }
 
 /* ---- WhatsApp connection feedback ---- */
@@ -101,7 +102,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed !important; }
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.35; transform: scale(0.7); }
 }
-.wa-breathe { animation: waBreathe 1.15s ease-in-out infinite; }
+.wa-breathe { animation: waBreathe 1.15s ease-in-out infinite; will-change: transform, opacity; }
 
 /* Expanding ring that radiates out of the connecting dot. */
 @keyframes waRipple {
@@ -114,6 +115,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed !important; }
   border-radius: 999px;
   animation: waRipple 1.4s ease-out infinite;
   pointer-events: none;
+  will-change: transform, opacity;
 }
 
 /* One-shot celebration when the number links: the badge pops, a ring bursts
@@ -156,3 +158,16 @@ button:disabled { opacity: 0.6; cursor: not-allowed !important; }
 ::-webkit-scrollbar-thumb { background: #d8d8d3; border-radius: 999px; }
 ::-webkit-scrollbar-thumb:hover { background: #b8b8b3; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* On devices where the OS reports a preference for reduced motion, kill all
+   infinite animations — spinning dots and pulsing rings on a budget GPU can
+   cause jank or even trigger motion sickness. One-shot entrance animations
+   (modalIn, fadeSlideUp, waPop, toastIn) are kept because they are brief and
+   provide essential state feedback. */
+@media (prefers-reduced-motion: reduce) {
+  .wa-breathe,
+  .wa-ripple,
+  .wa-burst,
+  .status-pulse,
+  .lucide-spin { animation: none !important; }
+}

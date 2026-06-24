@@ -92,7 +92,7 @@ export function ProcessModal({ ids = [], batchId = null, initialJobs = [], onClo
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const { data, mutate } = useSWR('/jobs?limit=500', api.fetcher, { refreshInterval: 1500 });
+  const { data, mutate } = useSWR('/jobs?limit=500', api.fetcher, { refreshInterval: 2500 });
   const idSet = new Set(ids);
   const live = (data?.jobs || []).filter((j) => idSet.has(j.id));
   // Keep the original order; fall back to the snapshot until the first poll lands.

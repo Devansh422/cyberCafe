@@ -196,7 +196,9 @@ pub fn render_image_to_a4_pdf(bytes: &[u8], p: &Preset) -> anyhow::Result<Vec<u8
     let scale = (A4_W as f32 / w as f32).min(A4_H as f32 / h as f32);
     let nw = ((w as f32) * scale).round().max(1.0) as u32;
     let nh = ((h as f32) * scale).round().max(1.0) as u32;
-    let resized = image::imageops::resize(&img.to_rgb8(), nw, nh, FilterType::Lanczos3);
+    // CatmullRom (bicubic) is ~2× faster than Lanczos3 on budget CPUs with
+    // imperceptible quality difference for print-sized downscales.
+    let resized = image::imageops::resize(&img.to_rgb8(), nw, nh, FilterType::CatmullRom);
 
     let mut canvas = RgbImage::from_pixel(A4_W, A4_H, Rgb([255, 255, 255]));
     let ox = ((A4_W.saturating_sub(nw)) / 2) as i64;
