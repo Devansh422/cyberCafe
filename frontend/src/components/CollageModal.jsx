@@ -5,9 +5,13 @@ import { api, fileUrl } from '@/lib/api';
 import { Avatar } from './Avatar';
 import { Spinner } from './Spinner';
 
-// Detect the non-background bounding box of an ID card in the image using canvas.
-// Samples corner pixels for background color, then finds the tight crop of
-// foreground content. Returns { imgW, imgH, bounds:{x,y,w,h} } (0-1 normalized).
+// Detect the ID card bounding box using Sobel gradient edge projection.
+// A box blur first suppresses fine background texture (fabric patterns, wallpaper)
+// so only large-scale card edges remain. Gx column projection finds left/right
+// boundaries; Gy row projection finds top/bottom boundaries. Works regardless of
+// background color/pattern — the old corner-sampling approach broke on patterned
+// or multi-colored backgrounds like fabric, printed sheets, etc.
+// Returns { imgW, imgH, bounds:{x,y,w,h} } (0–1 normalized).
 async function detectIdBounds(imgSrc) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -16,48 +20,118 @@ async function detectIdBounds(imgSrc) {
       const { naturalWidth: imgW, naturalHeight: imgH } = img;
       const MAX = 600;
       const sx = Math.min(1, MAX / Math.max(imgW, imgH));
-      const w = Math.round(imgW * sx);
-      const h = Math.round(imgH * sx);
+      const W = Math.max(1, Math.round(imgW * sx));
+      const H = Math.max(1, Math.round(imgH * sx));
       const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
+      canvas.width = W; canvas.height = H;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, w, h);
-      const { data } = ctx.getImageData(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, W, H);
+      const { data } = ctx.getImageData(0, 0, W, H);
 
-      function cornerAvg(x0, y0) {
-        let r = 0, g = 0, b = 0;
-        for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) {
-          const i = ((y0 + dy) * w + (x0 + dx)) * 4;
-          r += data[i]; g += data[i + 1]; b += data[i + 2];
+      // BT.601 luma
+      const gray = new Uint8Array(W * H);
+      for (let i = 0; i < W * H; i++)
+        gray[i] = (data[i * 4] * 77 + data[i * 4 + 1] * 150 + data[i * 4 + 2] * 29) >> 8;
+
+      // Box blur: radius ≈ 2% of smaller dimension (min 3 px).
+      // Kills fine background texture while preserving the card's large-scale boundary.
+      const r = Math.max(3, Math.round(Math.min(W, H) * 0.02));
+      const bl = idBoxBlur(gray, W, H, r);
+
+      // Sobel: Gx detects vertical edges (left/right card boundary);
+      //        Gy detects horizontal edges (top/bottom card boundary).
+      const agx = new Float32Array(W * H);
+      const agy = new Float32Array(W * H);
+      for (let y = 1; y < H - 1; y++) {
+        for (let x = 1; x < W - 1; x++) {
+          const gx =
+            -bl[(y-1)*W+x-1] + bl[(y-1)*W+x+1]
+            - 2*bl[y*W+x-1]  + 2*bl[y*W+x+1]
+            - bl[(y+1)*W+x-1] + bl[(y+1)*W+x+1];
+          const gy =
+            -bl[(y-1)*W+x-1] - 2*bl[(y-1)*W+x] - bl[(y-1)*W+x+1]
+            + bl[(y+1)*W+x-1] + 2*bl[(y+1)*W+x] + bl[(y+1)*W+x+1];
+          agx[y*W+x] = Math.abs(gx);
+          agy[y*W+x] = Math.abs(gy);
         }
-        return [r / 9, g / 9, b / 9];
-      }
-      const cs = [cornerAvg(0, 0), cornerAvg(w - 3, 0), cornerAvg(0, h - 3), cornerAvg(w - 3, h - 3)];
-      const bgR = cs.reduce((s, c) => s + c[0], 0) / 4;
-      const bgG = cs.reduce((s, c) => s + c[1], 0) / 4;
-      const bgB = cs.reduce((s, c) => s + c[2], 0) / 4;
-
-      function isFg(i) {
-        const dr = data[i] - bgR, dg = data[i + 1] - bgG, db = data[i + 2] - bgB;
-        return dr * dr + dg * dg + db * db > 1600; // ~40 per channel
       }
 
-      let left = w, right = 0, top = h, bottom = 0;
-      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        if (isFg((y * w + x) * 4)) {
-          if (x < left) left = x;
-          if (x > right) right = x;
-          if (y < top) top = y;
-          if (y > bottom) bottom = y;
+      // Projection profiles: the card boundary spans many rows/columns so it
+      // produces the dominant peak even against a textured background.
+      const colProj = new Float32Array(W); // sum |Gx| per column → vertical edges
+      const rowProj = new Float32Array(H); // sum |Gy| per row    → horizontal edges
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++) {
+          colProj[x] += agx[y*W+x];
+          rowProj[y] += agy[y*W+x];
         }
-      }
+
+      const SC = idSmooth1D(colProj, 3);
+      const SR = idSmooth1D(rowProj, 3);
+
+      // Outer 4% of each dimension may contain hard image-border artefacts — skip them.
+      const mx = Math.round(W * 0.04);
+      const my = Math.round(H * 0.04);
+      const left   = idOuterPeak(SC, mx,     Math.floor(W / 2), +1);
+      const right  = idOuterPeak(SC, W-1-mx, Math.ceil(W / 2),  -1);
+      const top    = idOuterPeak(SR, my,     Math.floor(H / 2), +1);
+      const bottom = idOuterPeak(SR, H-1-my, Math.ceil(H / 2),  -1);
 
       if (right <= left || bottom <= top) { resolve({ imgW, imgH, bounds: null }); return; }
-      resolve({ imgW, imgH, bounds: { x: left / w, y: top / h, w: (right - left) / w, h: (bottom - top) / h } });
+      resolve({
+        imgW, imgH,
+        bounds: {
+          x: left / W,
+          y: top / H,
+          w: Math.max(0.1, (right - left) / W),
+          h: Math.max(0.1, (bottom - top) / H),
+        },
+      });
     };
     img.onerror = () => resolve({ imgW: 0, imgH: 0, bounds: null });
     img.src = imgSrc;
   });
+}
+
+function idBoxBlur(src, W, H, r) {
+  const tmp = new Uint8Array(W * H);
+  const dst = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      let s = 0, n = 0;
+      for (let d = -r; d <= r; d++) { const xi = x+d; if (xi >= 0 && xi < W) { s += src[y*W+xi]; n++; } }
+      tmp[y*W+x] = (s / n + 0.5) | 0;
+    }
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      let s = 0, n = 0;
+      for (let d = -r; d <= r; d++) { const yi = y+d; if (yi >= 0 && yi < H) { s += tmp[yi*W+x]; n++; } }
+      dst[y*W+x] = (s / n + 0.5) | 0;
+    }
+  return dst;
+}
+
+function idSmooth1D(arr, r) {
+  const n = arr.length, out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, cnt = 0;
+    for (let d = -r; d <= r; d++) { const j = i+d; if (j >= 0 && j < n) { s += arr[j]; cnt++; } }
+    out[i] = s / cnt;
+  }
+  return out;
+}
+
+// Scan from `start` toward `end` (direction ±1); return the first index where
+// the profile exceeds 30% of the maximum in [start,end] — the leading edge of
+// the dominant gradient peak, i.e. where the card boundary begins.
+function idOuterPeak(profile, start, end, dir) {
+  const lo = Math.min(start, end), hi = Math.max(start, end);
+  let maxVal = 0, maxIdx = lo;
+  for (let i = lo; i <= hi; i++) if (profile[i] > maxVal) { maxVal = profile[i]; maxIdx = i; }
+  const thresh = maxVal * 0.30;
+  for (let i = start; dir > 0 ? i <= maxIdx : i >= maxIdx; i += dir)
+    if (profile[i] >= thresh) return i;
+  return maxIdx;
 }
 
 // Cell rectangles as page fractions [x, y, w, h] (top-down). Both photos live
