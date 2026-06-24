@@ -54,17 +54,34 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 /// task so the API is available immediately and the UI can show download
 /// progress via `/api/system/components`. In dev (`RATAN_COMPONENTS_DIR` unset)
 /// there's nothing to fetch and it goes straight to starting WhatsApp.
+///
+/// Per-file `.sha256` markers let us determine which components need work before
+/// touching any large file. Only components whose marker is absent or stale are
+/// shown in the progress UI — on a post-update boot where only the sidecar
+/// changed, the UI shows just the sidecar's size, not the full 229 MB.
 pub fn spawn_bootstrap(state: SharedState) {
     tokio::spawn(async move {
         if let Some(dir) = state.config.components_dir.clone() {
             let specs = components::manifest();
-            state.components.reset(&specs);
-            match components::ensure_all(&dir, &specs, &state.components).await {
-                Ok(()) => state.components.set_ready(),
-                Err(e) => {
-                    tracing::error!("[components] download failed: {e}");
-                    state.components.set_error(e.to_string());
-                    return; // leave WhatsApp/passport gated; the UI offers a retry
+
+            // Quick pre-check using tiny per-file markers — never reads large files.
+            // Only the specs whose marker is absent or stale need verification or download.
+            let needs_work = components::specs_needing_work(&dir, &specs);
+
+            if needs_work.is_empty() {
+                // All markers valid → ready immediately; the setup UI never shows.
+                state.components.set_ready();
+            } else {
+                // Reset the progress state with ONLY the specs that need work so
+                // the UI total shows (e.g.) "7 MB" not "229 MB" after a patch update.
+                state.components.reset(&needs_work);
+                match components::ensure_all(&dir, &specs, &state.components).await {
+                    Ok(()) => state.components.set_ready(),
+                    Err(e) => {
+                        tracing::error!("[components] download failed: {e}");
+                        state.components.set_error(e.to_string());
+                        return; // leave WhatsApp/passport gated; the UI offers a retry
+                    }
                 }
             }
         } else {

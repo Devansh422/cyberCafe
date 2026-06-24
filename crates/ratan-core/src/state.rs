@@ -28,8 +28,11 @@ impl AppState {
         let whatsapp = WhatsApp::new(&config);
         let print = PrintService::new();
         let passport = Passport::new();
-        // Packaged app: assets live in a downloaded components folder (start in
-        // the downloading phase). Dev: nothing to fetch → ready immediately.
+        // Packaged app: start as "downloading" so the setup screen shows immediately
+        // if the UI manages to poll before spawn_bootstrap resets the state.
+        // spawn_bootstrap overwrites this with reset(&needs_work) within a few ms
+        // (before any .await), so the 229 MB total here is never visible in practice.
+        // Dev: nothing to fetch → ready immediately.
         let components = if config.components_dir.is_some() {
             ComponentsState::pending(&components::manifest())
         } else {
