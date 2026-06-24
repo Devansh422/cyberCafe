@@ -35,20 +35,34 @@ fn with_preview(result: impl serde::Serialize, id: &str) -> AppResult<Response> 
     Ok((StatusCode::CREATED, Json(v)).into_response())
 }
 
+/// Block passport work until the runtime components (models, onnxruntime.dll)
+/// have finished downloading — otherwise the ONNX sessions would fail to build
+/// and cache a permanent failure for this run.
+fn require_components(st: &SharedState) -> AppResult<()> {
+    if st.components.ready() {
+        Ok(())
+    } else {
+        Err(AppError::bad("Setting up — runtime components are still downloading. Please wait a moment and try again."))
+    }
+}
+
 async fn prepare(State(st): State<SharedState>, mut multipart: Multipart) -> AppResult<Response> {
+    require_components(&st)?;
     let mut file: Option<Vec<u8>> = None;
     let mut bg: Option<String> = None;
+    let mut rotate: Option<f32> = None;
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::bad(e.to_string()))? {
         match field.name().unwrap_or("") {
             "file" => file = Some(field.bytes().await.map_err(|e| AppError::bad(e.to_string()))?.to_vec()),
             "bg" => bg = field.text().await.ok(),
+            "rotate" => rotate = field.text().await.ok().and_then(|t| t.trim().parse().ok()),
             _ => {
                 let _ = field.bytes().await;
             }
         }
     }
     let Some(buffer) = file else { return Err(AppError::bad("file required")) };
-    let result = passport::prepare(&st, buffer, bg).await?;
+    let result = passport::prepare(&st, buffer, bg, rotate).await?;
     let id = result.id.clone();
     with_preview(result, &id)
 }
@@ -58,12 +72,15 @@ struct PrepareJobBody {
     #[serde(rename = "jobId")]
     job_id: Option<i64>,
     bg: Option<String>,
+    #[serde(default)]
+    rotate: Option<f32>,
 }
 
 async fn prepare_job(State(st): State<SharedState>, body: Bytes) -> AppResult<Response> {
+    require_components(&st)?;
     let b: PrepareJobBody = parse_body(&body);
     let Some(job_id) = b.job_id else { return Err(AppError::bad("jobId required")) };
-    let result = passport::prepare_from_job(&st, job_id, b.bg).await?;
+    let result = passport::prepare_from_job(&st, job_id, b.bg, b.rotate).await?;
     let id = result.id.clone();
     with_preview(result, &id)
 }

@@ -71,7 +71,7 @@ fn apply_orientation(img: DynamicImage, o: u32) -> DynamicImage {
 }
 
 #[inline]
-fn clamp_u8(v: f32) -> u8 {
+pub fn clamp_u8(v: f32) -> u8 {
     if v <= 0.0 {
         0
     } else if v >= 255.0 {
@@ -113,6 +113,14 @@ pub fn apply_preset_pixels(mut canvas: RgbImage, p: &Preset) -> RgbImage {
 /// uncovered corners with white. Bilinear sampling keeps edges smooth — used by
 /// the collage compositor so the print matches the CSS-rotated live preview.
 pub fn rotate_rgb(src: &RgbImage, degrees: f32) -> RgbImage {
+    rotate_rgb_fill(src, degrees, Rgb([255, 255, 255]))
+}
+
+/// Like [`rotate_rgb`] but fills the uncovered corners with `fill` instead of
+/// white — used by the passport pipeline so an auto-straighten rotation paints
+/// the rotated-in corners with the chosen background colour (they then composite
+/// seamlessly into the solid backdrop).
+pub fn rotate_rgb_fill(src: &RgbImage, degrees: f32, fill: Rgb<u8>) -> RgbImage {
     let rad = degrees.to_radians();
     let (sin, cos) = rad.sin_cos();
     let (w, h) = (src.width() as f32, src.height() as f32);
@@ -121,7 +129,7 @@ pub fn rotate_rgb(src: &RgbImage, degrees: f32) -> RgbImage {
     let (cx, cy) = (w / 2.0, h / 2.0);
     let (ncx, ncy) = (nw as f32 / 2.0, nh as f32 / 2.0);
 
-    let mut out = RgbImage::from_pixel(nw, nh, Rgb([255, 255, 255]));
+    let mut out = RgbImage::from_pixel(nw, nh, fill);
     for (x, y, px) in out.enumerate_pixels_mut() {
         // Inverse-rotate the destination pixel back into source space.
         let dx = x as f32 + 0.5 - ncx;

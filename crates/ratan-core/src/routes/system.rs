@@ -28,6 +28,22 @@ pub fn router() -> Router<SharedState> {
         .route("/cancel", post(cancel))
         .route("/activity", get(activity_feed))
         .route("/diagnostics", get(diag))
+        .route("/components", get(components_status))
+        .route("/components/retry", post(components_retry))
+}
+
+/// First-run/after-update component download progress (the UI polls this and
+/// shows a setup screen while not `ready`).
+async fn components_status(State(st): State<SharedState>) -> Json<crate::components::ComponentsStatus> {
+    Json(st.components.snapshot())
+}
+
+/// Retry the component download after an error (e.g. the machine was offline).
+async fn components_retry(State(st): State<SharedState>) -> Json<crate::components::ComponentsStatus> {
+    if st.config.components_dir.is_some() && !st.components.ready() {
+        crate::spawn_bootstrap(st.clone());
+    }
+    Json(st.components.snapshot())
 }
 
 #[derive(Debug, Deserialize, Default)]

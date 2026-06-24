@@ -147,9 +147,9 @@ export function PassportSourceModal({ bg, onClose, onConfirm }) {
                       )}
                     </div>
                     <div className="flex items-center gap-2 text-xs text-text-secondary" style={{ padding: '7px 9px' }}>
-                      <Avatar name={job.customer_name || job.customer_phone || '?'} size={18} />
+                      <Avatar name={job.customer_phone || job.customer_name || '?'} size={18} />
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {job.customer_name || 'Unknown'}
+                        {job.customer_phone || job.customer_name || 'Unknown'}
                       </span>
                       <span className="ml-auto" style={{ whiteSpace: 'nowrap' }}>{fmtDateShort(job.created_at)}</span>
                     </div>

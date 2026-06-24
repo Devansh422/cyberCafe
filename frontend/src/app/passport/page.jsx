@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import {
   Upload, Plus, Minus, X, Trash2, AlertTriangle, Printer,
   Loader2, Sparkles, Image as ImageIcon, CheckCircle2, MessageCircle, Ban,
+  RotateCw, Wand2,
 } from 'lucide-react';
 import { api, passportPreviewUrl } from '@/lib/api';
 import { ProcessModal } from '@/components/ProcessModal';
@@ -98,9 +99,11 @@ export default function PassportPage() {
   const anyPreparing = photos.some((p) => p.preparing);
 
   // Run MODNet on an entry, sourcing from its uploaded file or its WhatsApp job.
+  // `rotate` is the manual fine-tune nudge (added to the auto-straighten angle).
   async function prepareEntry(entry, useBg, signal) {
-    if (entry.file) return api.preparePassport(entry.file, useBg, signal);
-    return api.preparePassportFromJob(entry.jobId, useBg, signal);
+    const rot = entry.rotate || 0;
+    if (entry.file) return api.preparePassport(entry.file, useBg, signal, rot);
+    return api.preparePassportFromJob(entry.jobId, useBg, signal, rot);
   }
 
   async function runPrepare(entries, useBg) {
@@ -113,7 +116,7 @@ export default function PassportPage() {
           const res = await prepareEntry(entry, useBg, controller.signal);
           setPhotos((prev) => prev.map((p) =>
             p.uid === entry.uid
-              ? { ...p, id: res.id, previewUrl: passportPreviewUrl(res.id), matted: res.matted, subjectFound: res.subjectFound, faceDetected: res.faceDetected, preparing: false, error: null }
+              ? { ...p, id: res.id, previewUrl: passportPreviewUrl(res.id), matted: res.matted, subjectFound: res.subjectFound, faceDetected: res.faceDetected, appliedAngle: res.appliedAngle ?? 0, preparing: false, error: null }
               : p));
         } catch (e) {
           const cancelled = e.name === 'AbortError';
@@ -141,7 +144,7 @@ export default function PassportPage() {
     if (!files.length) return;
     setErr(null);
     const seeded = files.map((file) => ({
-      uid: ++localSeq, name: file.name, file, id: null, previewUrl: null, matted: null, preparing: true, copies: 1, error: null,
+      uid: ++localSeq, name: file.name, file, id: null, previewUrl: null, matted: null, preparing: true, copies: 1, rotate: 0, error: null,
     }));
     setPhotos((prev) => [...prev, ...seeded]);
     await runPrepare(seeded, bg);
@@ -165,8 +168,10 @@ export default function PassportPage() {
       matted: prepared ? prepared.matted : null,
       subjectFound: prepared?.subjectFound,
       faceDetected: prepared?.faceDetected,
+      appliedAngle: prepared?.appliedAngle ?? 0,
       preparing: !prepared,
       copies: 1,
+      rotate: 0,
       error: null,
     }));
     setPhotos((prev) => [...prev, ...seeded]);
@@ -187,6 +192,24 @@ export default function PassportPage() {
   function setCopies(uid, delta) {
     setPhotos((prev) => prev.map((p) =>
       p.uid === uid ? { ...p, copies: Math.max(1, Math.min(MAX_SLOTS, p.copies + delta)) } : p));
+  }
+
+  // Live-update the manual rotation nudge while dragging the slider (cheap, no
+  // backend call). The new angle is baked in on release via applyRotate.
+  function setRotateValue(uid, value) {
+    const rotate = Math.max(-15, Math.min(15, value));
+    setPhotos((prev) => prev.map((p) => (p.uid === uid ? { ...p, rotate } : p)));
+  }
+  // Re-run the pipeline for one photo with its current manual rotation (called
+  // on slider release so we don't hammer the backend during the drag).
+  async function applyRotate(uid) {
+    let target;
+    setPhotos((prev) => prev.map((p) => {
+      if (p.uid !== uid || (!p.file && !p.jobId)) return p;
+      target = p;
+      return { ...p, preparing: true };
+    }));
+    if (target) await runPrepare([target], bg);
   }
   function removePhoto(uid) {
     setPhotos((prev) => prev.filter((p) => p.uid !== uid));
@@ -224,7 +247,7 @@ export default function PassportPage() {
             Passport Photos
           </h1>
           <p className="text-sm text-text-secondary mt-1">
-            Detects & centres the face, removes the background, crops to 3:4 — then tiles 9 (3×3) onto a 4"×6" sheet ready to print.
+            Straightens & centres the face, cleanly removes the background, auto-enhances exposure & colour, crops to 3:4 — then tiles 9 (3×3) onto a 4"×6" sheet ready to print.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs">
@@ -359,12 +382,16 @@ export default function PassportPage() {
                   </button>
                 )}
               </div>
-              {photos.map((p) => (
+              {photos.map((p) => {
+                const ready = p.id && !p.preparing && !p.error;
+                const autoLeveled = Math.abs((p.appliedAngle || 0) - (p.rotate || 0)) > 0.15;
+                return (
                 <div
                   key={p.uid}
-                  className="flex items-center gap-3"
+                  className="flex flex-col gap-2"
                   style={{ background: 'var(--color-bg-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 10 }}
                 >
+                  <div className="flex items-center gap-3">
                   <div
                     style={{ width: 64, height: 48, borderRadius: 6, overflow: 'hidden', background: 'var(--color-bg-overlay)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                   >
@@ -384,7 +411,7 @@ export default function PassportPage() {
                     </span>
                     <span className="text-xs text-text-secondary">
                       {p.preparing
-                        ? 'Detecting face · removing background…'
+                        ? 'Detecting face · cleaning background · enhancing…'
                         : p.error
                         ? <span style={{ color: 'var(--color-tag-pink-text)' }}>{p.error}</span>
                         : p.subjectFound === false
@@ -392,8 +419,8 @@ export default function PassportPage() {
                         : p.matted === false
                         ? 'Tiled as-is (MODNet offline)'
                         : p.faceDetected === false
-                        ? <span style={{ color: 'var(--color-tag-yellow-text)' }}>No face found · centred crop</span>
-                        : 'Face centred · bg removed'}
+                        ? <span style={{ color: 'var(--color-tag-yellow-text)' }}>No face found · centred crop · enhanced</span>
+                        : 'Face centred · background cleaned · auto-enhanced'}
                     </span>
                   </div>
 
@@ -421,8 +448,37 @@ export default function PassportPage() {
                   >
                     <Trash2 size={14} />
                   </button>
+                  </div>
+
+                  {/* Manual straighten — fine-tunes the auto-leveled angle. */}
+                  {ready && (
+                    <div className="flex items-center gap-2" title="Rotate to straighten — released to apply">
+                      <RotateCw size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+                      <input
+                        type="range"
+                        min={-15}
+                        max={15}
+                        step={1}
+                        value={p.rotate || 0}
+                        onChange={(e) => setRotateValue(p.uid, Number(e.target.value))}
+                        onPointerUp={() => applyRotate(p.uid)}
+                        onKeyUp={() => applyRotate(p.uid)}
+                        aria-label="Rotate photo"
+                        style={{ flex: 1, accentColor: 'var(--color-brand)', cursor: 'pointer' }}
+                      />
+                      <span className="text-xs font-medium" style={{ width: 34, textAlign: 'right', color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                        {(p.rotate || 0) > 0 ? '+' : ''}{p.rotate || 0}°
+                      </span>
+                      {autoLeveled && (
+                        <span className="inline-flex items-center gap-1 text-xs rounded-pill font-semibold" style={{ padding: '2px 7px', background: 'var(--color-tag-green-bg)', color: 'var(--color-tag-green-text)' }}>
+                          <Wand2 size={10} /> auto
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>

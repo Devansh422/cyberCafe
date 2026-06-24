@@ -1,0 +1,5 @@
+{ "components": [
+  { "key": "modnet",      "file": "modnet.onnx",     "version": "t", "sha256": "fc46262f2f23763fe0395f9324cb7b11c96869f074768505254b388ead0ef3e9", "size": 1500000, "url": "http://127.0.0.1:8099/modnet.onnx" },
+  { "key": "onnxruntime", "file": "onnxruntime.dll", "version": "t", "sha256": "c2b43bdc1c3c26417ad185273efb348329376f42d08bf6f7a7f12ac8029c669b", "size": 900000, "url": "http://127.0.0.1:8099/onnxruntime.dll" },
+  { "key": "sumatra",     "file": "SumatraPDF.exe",  "version": "t", "sha256": "46656a4febfeccc96207f1a6129525a773a676e0b2c707a820b9edbb14de2861", "size": 200000, "url": "http://127.0.0.1:8099/SumatraPDF.exe" }
+] }

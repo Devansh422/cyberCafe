@@ -59,18 +59,23 @@ export const api = {
   printers: (force = false) => request(`/system/printers${force ? '?force=1' : ''}`),
   activity: (limit = 25) => request(`/system/activity?limit=${limit}`),
   diagnostics: () => request('/system/diagnostics'),
+  // First-run/after-update download progress for the externalized heavy
+  // components (models / onnxruntime.dll / SumatraPDF / WhatsApp sidecar).
+  componentsStatus: () => request('/system/components'),
+  retryComponents: () => request('/system/components/retry', { method: 'POST' }),
   // ---- Passport pipeline ----
   passportStatus: () => request('/passport/status'),
-  preparePassport: async (file, bg, signal) => {
+  preparePassport: async (file, bg, signal, rotate = 0) => {
     const fd = new FormData();
     fd.append('file', file);
     if (bg) fd.append('bg', bg);
+    if (rotate) fd.append('rotate', String(rotate));
     const res = await fetch(`${base}/passport/prepare`, { method: 'POST', body: fd, signal });
     if (!res.ok) throw new Error((await res.text().catch(() => '')) || res.statusText);
     return res.json();
   },
-  preparePassportFromJob: (jobId, bg, signal) =>
-    request('/passport/prepare-job', { method: 'POST', body: JSON.stringify({ jobId, bg }), signal }),
+  preparePassportFromJob: (jobId, bg, signal, rotate = 0) =>
+    request('/passport/prepare-job', { method: 'POST', body: JSON.stringify({ jobId, bg, rotate }), signal }),
   createPassportSheet: (items, bg, signal) =>
     request('/passport/sheet', { method: 'POST', body: JSON.stringify({ items, bg }), signal }),
 };

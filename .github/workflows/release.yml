@@ -94,6 +94,55 @@ jobs:
           "{0:N1} MB  dist/onnxruntime.dll" -f ((Get-Item dist/onnxruntime.dll).Length/1MB)
         shell: pwsh
 
+      # Externalize the heavy, rarely-changing assets so the auto-update installer
+      # stays small. Upload them (content-addressed) to a stable `runtime-assets`
+      # release the app downloads from on first run, and emit the manifest the app
+      # embeds. MUST run before the Tauri build (which embeds components.json via
+      # include_str!). See crates/ratan-core/src/components.rs.
+      - name: Publish runtime components & generate manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $tag = "runtime-assets"
+          New-Item -ItemType Directory -Force -Path assets | Out-Null
+          $defs = @(
+            @{ key="modnet";      src="MODNet/pretrained/modnet.onnx"; file="modnet.onnx";            version="1" },
+            @{ key="ultraface";   src="models/ultraface-RFB-320.onnx"; file="ultraface-RFB-320.onnx"; version="1" },
+            @{ key="onnxruntime"; src="dist/onnxruntime.dll";          file="onnxruntime.dll";        version="1.24.4" },
+            @{ key="sumatra";     src="dist/SumatraPDF.exe";           file="SumatraPDF.exe";         version="3.5.2" },
+            @{ key="sidecar";     src="dist/whatsapp-sidecar.exe";     file="whatsapp-sidecar.exe";   version=$env:GITHUB_SHA.Substring(0,12) }
+          )
+          $components = @()
+          foreach ($d in $defs) {
+            if (-not (Test-Path $d.src)) { throw "missing component: $($d.src)" }
+            $hash = (Get-FileHash $d.src -Algorithm SHA256).Hash.ToLower()
+            $sha16 = $hash.Substring(0,16)
+            $size = (Get-Item $d.src).Length
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($d.file)
+            $ext  = [System.IO.Path]::GetExtension($d.file)
+            $asset = "$base-$sha16$ext"
+            Copy-Item $d.src (Join-Path assets $asset) -Force
+            $components += [ordered]@{
+              key=$d.key; file=$d.file; version=$d.version; sha256=$hash; size=$size;
+              url="https://github.com/$repo/releases/download/$tag/$asset"
+            }
+            "{0,-22} {1,8:N1} MB  -> {2}" -f $d.file, ($size/1MB), $asset
+          }
+          # Ensure the stable runtime-assets release exists, then upload. Content-
+          # addressed names dedupe; --clobber makes re-runs idempotent.
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $repo --title "Runtime assets" --notes "Large static components the Ratan app downloads at runtime (models, onnxruntime.dll, SumatraPDF, WhatsApp sidecar). Do NOT delete — removing these breaks installs. Assets are content-addressed, so old app versions keep working." --latest=false
+          }
+          $files = Get-ChildItem assets | ForEach-Object { $_.FullName }
+          gh release upload $tag $files --repo $repo --clobber
+          # Emit the manifest the app embeds at build time.
+          (@{ components = @($components) } | ConvertTo-Json -Depth 6) | Set-Content -Encoding utf8 crates/ratan-core/components.json
+          Write-Host "Wrote crates/ratan-core/components.json:"
+          Get-Content crates/ratan-core/components.json
+        shell: pwsh
+
       # tauri-action builds + signs the NSIS installer and, with
       # `createUpdaterArtifacts: true` in tauri.conf.json, also produces and
       # uploads `latest.json` + the `.sig` to the release it creates. It is the

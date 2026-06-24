@@ -36,8 +36,15 @@ pub struct Config {
     pub modnet_model: Option<PathBuf>,
     /// UltraFace detection model; `None` ⇒ centered-crop fallback.
     pub face_model: Option<PathBuf>,
+    /// WFLW-98 face-landmark model (passport auto-straighten); `None` ⇒ no
+    /// auto-leveling (the manual rotation nudge still works).
+    pub landmark_model: Option<PathBuf>,
     /// Directory holding bundled binaries (SumatraPDF) at runtime.
     pub resource_dir: PathBuf,
+    /// Persistent folder for externalized runtime components (models /
+    /// onnxruntime.dll / SumatraPDF / sidecar), downloaded once and cached across
+    /// updates. `None` in dev runs (assets are discovered from the project tree).
+    pub components_dir: Option<PathBuf>,
     /// WhatsApp `.wwebjs_auth` session directory (must be writable).
     pub session_dir: PathBuf,
     /// Packaged WhatsApp sidecar executable (`None` in pure dev runs).
@@ -92,8 +99,15 @@ impl Config {
                 root.join("models/version-RFB-320.onnx"),
             ])
         });
+        let landmark_model = env_path("LANDMARK_ONNX").or_else(|| {
+            first_existing(&[
+                root.join("models/pfld-wflw-98.onnx"),
+                root.join("models/landmark-98.onnx"),
+            ])
+        });
 
         let resource_dir = env_path("RATAN_RESOURCE_DIR").unwrap_or_else(|| root.clone());
+        let components_dir = env_path("RATAN_COMPONENTS_DIR");
         let session_dir = env_path("WA_SESSION_DIR").unwrap_or_else(|| root.join("backend").join(".wwebjs_auth"));
         let sidecar_path = env_path("WA_SIDECAR_PATH");
         let sidecar_script = env_path("WA_SIDECAR_SCRIPT").or_else(|| {
@@ -112,7 +126,9 @@ impl Config {
             cleanup_interval_minutes,
             modnet_model,
             face_model,
+            landmark_model,
             resource_dir,
+            components_dir,
             session_dir,
             sidecar_path,
             sidecar_script,

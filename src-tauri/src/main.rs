@@ -57,34 +57,27 @@ fn main() {
             set_default("DB_PATH", data_dir.join("data").join("ratan.db"));
             set_default("WA_SESSION_DIR", data_dir.join("wwebjs_auth"));
 
-            // Bundled resources (models / SumatraPDF / sidecar). When running
-            // unbundled (cargo run / cargo build exe), these won't exist next to
-            // the binary, so we leave them unset and let Config::from_env
-            // discover them from the project tree.
-            if let Ok(rd) = app.path().resource_dir() {
-                let modnet = rd.join("models").join("modnet.onnx");
-                if modnet.exists() {
-                    set_default("MODNET_ONNX", &modnet);
-                }
-                let face = rd.join("models").join("ultraface-RFB-320.onnx");
-                if face.exists() {
-                    set_default("FACE_ONNX", &face);
-                }
-                let sidecar = rd.join("whatsapp-sidecar.exe");
-                if sidecar.exists() {
-                    set_default("WA_SIDECAR_PATH", &sidecar);
-                }
-                if rd.join("SumatraPDF.exe").exists() {
-                    set_default("RATAN_RESOURCE_DIR", &rd);
-                }
-                // Point `ort` (load-dynamic) at the bundled Microsoft ONNX
-                // Runtime DLL. Read lazily on the first passport inference, so
-                // setting it here in `setup` is early enough.
-                let ort_dll = rd.join("onnxruntime.dll");
-                if ort_dll.exists() {
-                    set_default("ORT_DYLIB_PATH", &ort_dll);
-                }
-            }
+            // Heavy runtime assets are NOT bundled in the installer (that kept
+            // every auto-update at the full ~72 MB). They're downloaded once into
+            // this persistent components folder (verified by SHA-256) and reused
+            // across updates — see crates/ratan-core/src/components.rs. We point
+            // the env vars at the folder unconditionally: the files appear there
+            // after the first-run download, and ratan-core gates passport/WhatsApp
+            // on the download completing. (app-data survives updates; the install
+            // dir is what the updater replaces.) Only the tiny VC++ runtime DLLs
+            // stay bundled as resources, loaded app-locally by the OS.
+            let components = data_dir.join("components");
+            std::fs::create_dir_all(&components).ok();
+            set_default("RATAN_COMPONENTS_DIR", &components);
+            set_default("MODNET_ONNX", components.join("modnet.onnx"));
+            set_default("FACE_ONNX", components.join("ultraface-RFB-320.onnx"));
+            set_default("WA_SIDECAR_PATH", components.join("whatsapp-sidecar.exe"));
+            // SumatraPDF is resolved from RATAN_RESOURCE_DIR by processing::find_sumatra.
+            set_default("RATAN_RESOURCE_DIR", &components);
+            // Point `ort` (load-dynamic) at the downloaded Microsoft ONNX Runtime
+            // DLL. Read lazily on the first passport inference, so setting it here
+            // in `setup` is early enough.
+            set_default("ORT_DYLIB_PATH", components.join("onnxruntime.dll"));
 
             let config = ratan_core::Config::from_env();
             tauri::async_runtime::spawn(async move {

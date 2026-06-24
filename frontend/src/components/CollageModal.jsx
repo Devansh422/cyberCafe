@@ -1,9 +1,64 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { X, Check, Images, RotateCcw, RotateCw, FlipHorizontal2, FlipVertical2, ImageIcon } from 'lucide-react';
+import { X, Check, Images, RotateCcw, RotateCw, FlipHorizontal2, FlipVertical2, ImageIcon, Crosshair } from 'lucide-react';
 import { api, fileUrl } from '@/lib/api';
 import { Avatar } from './Avatar';
 import { Spinner } from './Spinner';
+
+// Detect the non-background bounding box of an ID card in the image using canvas.
+// Samples corner pixels for background color, then finds the tight crop of
+// foreground content. Returns { imgW, imgH, bounds:{x,y,w,h} } (0-1 normalized).
+async function detectIdBounds(imgSrc) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const { naturalWidth: imgW, naturalHeight: imgH } = img;
+      const MAX = 600;
+      const sx = Math.min(1, MAX / Math.max(imgW, imgH));
+      const w = Math.round(imgW * sx);
+      const h = Math.round(imgH * sx);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, w, h);
+      const { data } = ctx.getImageData(0, 0, w, h);
+
+      function cornerAvg(x0, y0) {
+        let r = 0, g = 0, b = 0;
+        for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) {
+          const i = ((y0 + dy) * w + (x0 + dx)) * 4;
+          r += data[i]; g += data[i + 1]; b += data[i + 2];
+        }
+        return [r / 9, g / 9, b / 9];
+      }
+      const cs = [cornerAvg(0, 0), cornerAvg(w - 3, 0), cornerAvg(0, h - 3), cornerAvg(w - 3, h - 3)];
+      const bgR = cs.reduce((s, c) => s + c[0], 0) / 4;
+      const bgG = cs.reduce((s, c) => s + c[1], 0) / 4;
+      const bgB = cs.reduce((s, c) => s + c[2], 0) / 4;
+
+      function isFg(i) {
+        const dr = data[i] - bgR, dg = data[i + 1] - bgG, db = data[i + 2] - bgB;
+        return dr * dr + dg * dg + db * db > 1600; // ~40 per channel
+      }
+
+      let left = w, right = 0, top = h, bottom = 0;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        if (isFg((y * w + x) * 4)) {
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
+      }
+
+      if (right <= left || bottom <= top) { resolve({ imgW, imgH, bounds: null }); return; }
+      resolve({ imgW, imgH, bounds: { x: left / w, y: top / h, w: (right - left) / w, h: (bottom - top) / h } });
+    };
+    img.onerror = () => resolve({ imgW: 0, imgH: 0, bounds: null });
+    img.src = imgSrc;
+  });
+}
 
 // Cell rectangles as page fractions [x, y, w, h] (top-down). Both photos live
 // in the TOP HALF of the A4 page — the bottom half stays blank. MUST stay in
@@ -38,7 +93,7 @@ function LayoutGlyph({ kind }) {
 // One photo placed inside its A4 cell. translate is in % of the element (which
 // fills the cell), so panX/panY of ±1 shifts by half a cell — matching the
 // server's `pan * (cell/2)`. object-fit:contain gives the same baseline scale.
-function CollageCell({ rect, id, tf, onPan, guides }) {
+function CollageCell({ rect, id, tf, onPan, guides, cellRef }) {
   const [fx, fy, fw, fh] = rect;
   const drag = useRef(null);
 
@@ -63,6 +118,7 @@ function CollageCell({ rect, id, tf, onPan, guides }) {
 
   return (
     <div
+      ref={cellRef}
       onPointerDown={down}
       onPointerMove={move}
       onPointerUp={up}
@@ -116,6 +172,10 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
   const [guides, setGuides] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState(null);
+  const [detectingSlot, setDetectingSlot] = useState(null);
+  const cellEl0 = useRef(null);
+  const cellEl1 = useRef(null);
+  const cellEls = [cellEl0, cellEl1];
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !generating) onClose?.(); };
@@ -145,6 +205,37 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
     setSelected([]);
     setTransforms([{ ...DEFAULT_TF }, { ...DEFAULT_TF }]);
     setErr(null);
+  }
+
+  // Detect the ID card boundaries in the image and auto-fit zoom + pan to fill the cell.
+  async function autoFit(slotIndex) {
+    const id = selected[slotIndex];
+    if (!id || detectingSlot !== null) return;
+    setDetectingSlot(slotIndex);
+    try {
+      const { imgW, imgH, bounds } = await detectIdBounds(fileUrl(id));
+      if (!bounds || !imgW || !imgH) return;
+      const cellEl = cellEls[slotIndex].current;
+      if (!cellEl) return;
+      const { width: cellW, height: cellH } = cellEl.getBoundingClientRect();
+      if (!cellW || !cellH) return;
+      // objectFit:contain scale
+      const S = Math.min(cellW / imgW, cellH / imgH);
+      const bCx = bounds.x + bounds.w / 2;
+      const bCy = bounds.y + bounds.h / 2;
+      // Pan units: translate(panX*50%, panY*50%) on the 100%×100% img element
+      const panX = -2 * (bCx - 0.5) * (imgW * S / cellW);
+      const panY = -2 * (bCy - 0.5) * (imgH * S / cellH);
+      // Zoom to fill cell with detected card bounds, 8% breathing room
+      const zoom = Math.min(cellW / (bounds.w * imgW * S), cellH / (bounds.h * imgH * S)) * 0.92;
+      setSlot(slotIndex, {
+        panX: clamp(panX, -1.5, 1.5),
+        panY: clamp(panY, -1.5, 1.5),
+        zoom: clamp(zoom, 0.3, 3),
+      });
+    } finally {
+      setDetectingSlot(null);
+    }
   }
 
   async function generate() {
@@ -258,9 +349,9 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                         <img src={fileUrl(job.id)} alt={job.filename} style={{ maxWidth: '100%', maxHeight: '100%' }} />
                       </div>
                       <div className="flex items-center gap-2 text-xs text-text-secondary" style={{ padding: '7px 10px' }}>
-                        <Avatar name={job.customer_name || job.customer_phone || '?'} size={20} />
+                        <Avatar name={job.customer_phone || job.customer_name || '?'} size={20} />
                         <span className="text-text-primary font-medium" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {job.customer_name || job.customer_phone || 'Unknown'}
+                          {job.customer_phone || job.customer_name || 'Unknown'}
                         </span>
                       </div>
                     </button>
@@ -293,6 +384,7 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                     tf={transforms[i]}
                     guides={guides}
                     onPan={(panX, panY) => setSlot(i, { panX, panY })}
+                    cellRef={cellEls[i]}
                   />
                 ))}
                 {/* Cut hint between the two cells (both live in the top half) */}
@@ -361,14 +453,24 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                         {i + 1}
                       </span>
                       <span className="text-sm font-medium" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {job?.original_name || job?.filename || `Photo ${i + 1}`}
+                        {job?.customer_phone || job?.customer_name || job?.original_name || job?.filename || `Photo ${i + 1}`}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => autoFit(i)}
+                        disabled={detectingSlot !== null}
+                        title="Auto-detect ID card boundaries and fit to cell"
+                        className="ml-auto flex items-center gap-1 text-xs font-semibold"
+                        style={{ background: 'none', border: 'none', cursor: detectingSlot !== null ? 'wait' : 'pointer', color: 'var(--color-brand)', flexShrink: 0 }}
+                      >
+                        {detectingSlot === i ? <Spinner size={12} color="var(--color-brand)" /> : <Crosshair size={12} />} Auto Detect
+                      </button>
                       <button
                         type="button"
                         onClick={() => resetSlot(i)}
                         title="Reset position, zoom, rotation and flips"
-                        className="ml-auto flex items-center gap-1 text-xs font-medium text-text-secondary"
-                        style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                        className="flex items-center gap-1 text-xs font-medium text-text-secondary"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}
                       >
                         <RotateCcw size={13} /> Reset
                       </button>

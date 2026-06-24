@@ -3,6 +3,7 @@ import { TopNav } from '@/components/TopNav';
 import { ActivitySidebar } from '@/components/ActivitySidebar';
 import { UpdateNotifier } from '@/components/UpdateNotifier';
 import { UpdateProvider } from '@/components/UpdateContext';
+import { ComponentsSetup } from '@/components/ComponentsSetup';
 
 export const metadata = {
   title: 'Ratan — Cyber Cafe Print Automation',
@@ -42,6 +43,7 @@ export default function RootLayout({ children }) {
             <ActivitySidebar />
           </div>
           <UpdateNotifier />
+          <ComponentsSetup />
         </UpdateProvider>
       </body>
     </html>

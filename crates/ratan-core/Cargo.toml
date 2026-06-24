@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # --- async runtime + web ---
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "signal", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "signal", "time", "sync", "io-util"] }
 axum = { version = "0.7", features = ["multipart", "macros"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "fs", "limit"] }

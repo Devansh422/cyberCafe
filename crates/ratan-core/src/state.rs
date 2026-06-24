@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::components::{self, ComponentsState};
 use crate::config::Config;
 use crate::db::Db;
 use crate::passport::Passport;
@@ -14,6 +15,8 @@ pub struct AppState {
     pub print: PrintService,
     pub whatsapp: WhatsApp,
     pub passport: Passport,
+    /// Download/verify progress for the externalized runtime components.
+    pub components: ComponentsState,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -25,6 +28,13 @@ impl AppState {
         let whatsapp = WhatsApp::new(&config);
         let print = PrintService::new();
         let passport = Passport::new();
-        Ok(Arc::new(AppState { config, db, print, whatsapp, passport }))
+        // Packaged app: assets live in a downloaded components folder (start in
+        // the downloading phase). Dev: nothing to fetch → ready immediately.
+        let components = if config.components_dir.is_some() {
+            ComponentsState::pending(&components::manifest())
+        } else {
+            ComponentsState::ready_now()
+        };
+        Ok(Arc::new(AppState { config, db, print, whatsapp, passport, components }))
     }
 }
