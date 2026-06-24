@@ -162,15 +162,25 @@ async function importMedia(buffer, meta) {
 
 function findChromiumPath() {
   if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
+  const local    = process.env.LOCALAPPDATA           || '';
+  const pf       = process.env.PROGRAMFILES           || 'C:\\Program Files';
+  const pf86     = process.env['PROGRAMFILES(X86)']   || 'C:\\Program Files (x86)';
   const candidates = [
-    path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    // Chrome — system-wide and per-user installs
+    path.join(local, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(pf,   'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    // Chrome Beta / Dev (less common but valid headless targets)
+    path.join(local, 'Google', 'Chrome Beta', 'Application', 'chrome.exe'),
+    path.join(local, 'Google', 'Chrome Dev',  'Application', 'chrome.exe'),
+    // Edge — ships with every Windows 10/11 machine; most reliable fallback
+    path.join(pf,   'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    // Edge per-user (some enterprise / non-admin installs land here)
+    path.join(local, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   ];
   for (const c of candidates) {
-    if (c.endsWith('.exe') && fs.existsSync(c)) return c;
+    try { if (fs.existsSync(c)) return c; } catch { /* skip */ }
   }
   return null;
 }
@@ -370,13 +380,34 @@ async function startClient() {
   }
   clearBrowserLocks();
 
+  const chrome = findChromiumPath();
+  if (!chrome) {
+    setStatus('unavailable', { lastError: 'No Chrome or Microsoft Edge browser found. Please install Google Chrome or Edge to use WhatsApp.' });
+    log('no Chromium-based browser found — cannot start WhatsApp client');
+    return;
+  }
+
   setStatus('starting');
   const puppeteer = {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run', '--disable-extensions'],
+    executablePath: chrome,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote',                      // prevents zygote-process crash in pkg-bundled / LOCALAPPDATA envs
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--disable-accelerated-2d-canvas',
+      '--metrics-recording-only',
+      '--safebrowsing-disable-auto-update',
+    ],
   };
-  const chrome = findChromiumPath();
-  if (chrome) puppeteer.executablePath = chrome;
 
   client = new Client({
     authStrategy: new LocalAuth({ clientId: 'ratan', dataPath: SESSION_DIR }),
