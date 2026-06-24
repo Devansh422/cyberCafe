@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
-import { Sparkles, Printer, Layers, Wand2, Ban, RefreshCw, Crop } from 'lucide-react';
+import { Sparkles, Printer, Layers, Wand2, Ban, RefreshCw, Crop, Settings2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Spinner } from './Spinner';
 
@@ -294,31 +294,56 @@ export function ControlPanel({ jobs = [], batchId = null, onChange, onClose }) {
             {pendingCount} of {count} still need processing
           </span>
         )}
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={mode === 'print' ? doPrint : doProcess}
-          className="flex items-center justify-center gap-2 text-sm font-semibold rounded-pill"
-          style={{
-            padding: '13px 16px',
-            background: 'var(--color-brand)',
-            color: 'var(--color-brand-fg)',
-            border: 'none',
-            cursor: disabled ? 'not-allowed' : 'pointer',
-            opacity: disabled ? 0.7 : 1,
-          }}
-        >
-          {busy
-            ? <Spinner size={16} color="var(--color-brand-fg)" />
-            : mode === 'print' ? <Printer size={16} /> : <Sparkles size={16} />}
-          {busy === 'process'
-            ? 'Processing…'
-            : busy === 'print'
-            ? 'Sending to printer…'
-            : mode === 'print'
-            ? (isBatch ? 'Print Batch →' : 'Print →')
-            : (isBatch ? 'Process Batch' : 'Process')}
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={mode === 'print' ? doPrint : doProcess}
+            className="flex flex-1 items-center justify-center gap-2 text-sm font-semibold rounded-pill"
+            style={{
+              padding: '13px 16px',
+              background: 'var(--color-brand)',
+              color: 'var(--color-brand-fg)',
+              border: 'none',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              opacity: disabled ? 0.7 : 1,
+            }}
+          >
+            {busy
+              ? <Spinner size={16} color="var(--color-brand-fg)" />
+              : mode === 'print' ? <Printer size={16} /> : <Sparkles size={16} />}
+            {busy === 'process'
+              ? 'Processing…'
+              : busy === 'print'
+              ? 'Sending to printer…'
+              : mode === 'print'
+              ? (isBatch ? 'Print Batch →' : 'Print →')
+              : (isBatch ? 'Process Batch' : 'Process')}
+          </button>
+
+          {/* Open Windows printer properties dialog for the selected printer. */}
+          {mode === 'print' && !busy && (
+            <button
+              type="button"
+              onClick={() => api.printerProperties(printer).catch(() => {})}
+              title={printer ? `Printer properties: ${printer}` : 'Printer properties'}
+              aria-label="Printer properties"
+              className="flex items-center justify-center"
+              style={{
+                width: 44,
+                height: 44,
+                flexShrink: 0,
+                background: 'var(--color-bg-overlay)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 12,
+                cursor: 'pointer',
+                color: 'var(--color-text-secondary)',
+              }}
+            >
+              <Settings2 size={16} />
+            </button>
+          )}
+        </div>
 
         {/* Kill switch — only while something is running. Aborts the request and
             kills the print engine on the backend. */}

@@ -25,6 +25,7 @@ pub fn router() -> Router<SharedState> {
         .route("/whatsapp/state", post(wa_state_push))
         .route("/whatsapp/import", post(wa_import))
         .route("/printers", get(printers))
+        .route("/printer-properties", post(printer_properties))
         .route("/cancel", post(cancel))
         .route("/activity", get(activity_feed))
         .route("/diagnostics", get(diag))
@@ -141,4 +142,30 @@ async fn activity_feed(State(st): State<SharedState>, Query(q): Query<ActivityQu
 
 async fn diag(State(st): State<SharedState>) -> Json<diagnostics::Report> {
     Json(diagnostics::run(&st).await)
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PrinterPropsQuery {
+    name: Option<String>,
+}
+
+/// Open the Windows printer properties dialog for the given printer.
+/// Uses `rundll32 printui.dll,PrintUIEntry /p /n "<name>"` — or the
+/// print-server properties sheet (`/s /t2`) when no name is provided.
+/// Returns immediately; the dialog runs in the background.
+async fn printer_properties(Query(q): Query<PrinterPropsQuery>) -> Json<Value> {
+    let name = q.name.unwrap_or_default();
+    #[cfg(windows)]
+    {
+        if name.is_empty() {
+            let _ = std::process::Command::new("rundll32")
+                .args(["printui.dll,PrintUIEntry", "/s", "/t2"])
+                .spawn();
+        } else {
+            let _ = std::process::Command::new("rundll32")
+                .args(["printui.dll,PrintUIEntry", "/p", "/n", name.as_str()])
+                .spawn();
+        }
+    }
+    Json(json!({ "ok": true }))
 }

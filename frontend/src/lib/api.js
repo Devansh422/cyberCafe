@@ -57,6 +57,8 @@ export const api = {
   logoutWhatsapp: () => request('/system/whatsapp/logout', { method: 'POST' }),
   // force=true re-enumerates connected printers past the backend's 30s cache.
   printers: (force = false) => request(`/system/printers${force ? '?force=1' : ''}`),
+  // Open the Windows native printer properties dialog for the named printer.
+  printerProperties: (name) => request(`/system/printer-properties${name ? `?name=${encodeURIComponent(name)}` : ''}`, { method: 'POST' }),
   activity: (limit = 25) => request(`/system/activity?limit=${limit}`),
   diagnostics: () => request('/system/diagnostics'),
   // First-run/after-update download progress for the externalized heavy

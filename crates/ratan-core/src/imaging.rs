@@ -23,17 +23,24 @@ pub struct Preset {
     /// Invert the tones after the grayscale/brightness/contrast stage — a
     /// photographic-negative look (white page → black, ink → white).
     pub invert: bool,
+    /// If Some(t), binarize to strict black-or-white after the sharpen pass:
+    /// pixels with luma < t become black (0), all others white (255).
+    /// Produces a true monotone output — no gray values.
+    pub threshold: Option<u8>,
 }
 
 /// Resolve a preset by key (mirrors `PRESETS` in processing/index.js).
 pub fn preset(name: &str) -> Option<Preset> {
     Some(match name {
-        "scan_pdf" => Preset { grayscale: true, sharpen: true, brightness: 1.05, contrast: 1.2, invert: false },
-        "bw" => Preset { grayscale: true, sharpen: false, brightness: 1.0, contrast: 1.0, invert: false },
-        "color" => Preset { grayscale: false, sharpen: true, brightness: 1.0, contrast: 1.0, invert: false },
-        "high_contrast" => Preset { grayscale: true, sharpen: true, brightness: 1.1, contrast: 1.4, invert: false },
-        "a4_resize" => Preset { grayscale: false, sharpen: false, brightness: 1.0, contrast: 1.0, invert: false },
-        "inverted" => Preset { grayscale: true, sharpen: false, brightness: 1.0, contrast: 1.0, invert: true },
+        "scan_pdf"      => Preset { grayscale: true,  sharpen: true,  brightness: 1.05, contrast: 1.2, invert: false, threshold: None },
+        "bw"            => Preset { grayscale: true,  sharpen: false, brightness: 1.0,  contrast: 1.0, invert: false, threshold: None },
+        "color"         => Preset { grayscale: false, sharpen: true,  brightness: 1.0,  contrast: 1.0, invert: false, threshold: None },
+        // True monotone: sharpen edges first, then binarize at 175.
+        // Anything darker than 175 luma becomes pure black — captures light-gray
+        // text on ID cards. Only paper-white (>175) stays white.
+        "high_contrast" => Preset { grayscale: true,  sharpen: true,  brightness: 1.0,  contrast: 1.2, invert: false, threshold: Some(175) },
+        "a4_resize"     => Preset { grayscale: false, sharpen: false, brightness: 1.0,  contrast: 1.0, invert: false, threshold: None },
+        "inverted"      => Preset { grayscale: true,  sharpen: false, brightness: 1.0,  contrast: 1.0, invert: true,  threshold: None },
         _ => return None,
     })
 }
@@ -81,9 +88,17 @@ pub fn clamp_u8(v: f32) -> u8 {
     }
 }
 
-/// Apply a preset's pixel pipeline to an RGB canvas: optional grayscale, then a
-/// multiplicative brightness×contrast, then optional unsharp. Shared by the
-/// single-image render and the collage compositor.
+/// Apply a preset's pixel pipeline to an RGB canvas.
+///
+/// Pipeline order:
+/// 1. Grayscale (optional)
+/// 2. Brightness × contrast
+/// 3. Invert (optional)
+/// 4. Unsharp mask (optional) — sharpens *before* binarization so edges are
+///    clean when a threshold is applied next
+/// 5. Threshold binarization → strict black/white only (optional)
+///
+/// Shared by the single-image render and the collage compositor.
 pub fn apply_preset_pixels(mut canvas: RgbImage, p: &Preset) -> RgbImage {
     let factor = p.brightness * p.contrast;
     for px in canvas.pixels_mut() {
@@ -101,11 +116,20 @@ pub fn apply_preset_pixels(mut canvas: RgbImage, p: &Preset) -> RgbImage {
         }
         px.0 = out;
     }
-    if p.sharpen {
+    // Sharpen before threshold so edges are crisper in the binarized output.
+    let mut canvas = if p.sharpen {
         image::imageops::unsharpen(&canvas, 1.0, 1)
     } else {
         canvas
+    };
+    // Binarize: pixels darker than the threshold become pure black, rest white.
+    if let Some(t) = p.threshold {
+        for px in canvas.pixels_mut() {
+            let luma = px.0[0]; // already grayscale when p.grayscale is true
+            px.0 = if luma < t { [0, 0, 0] } else { [255, 255, 255] };
+        }
     }
+    canvas
 }
 
 /// Rotate an RGB image by `degrees` (clockwise, like CSS `rotate()`) about its
