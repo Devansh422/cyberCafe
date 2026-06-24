@@ -24,21 +24,22 @@ pub struct Preset {
     pub invert: bool,
     /// If Some(t), binarize to strict black-or-white: luma < t → black.
     pub threshold: Option<u8>,
-    /// Use the full CLAHE-based high-contrast document pipeline instead of the
-    /// standard per-pixel pipeline. When true, all other fields are ignored.
-    pub clahe: bool,
+    /// Use the full document-scan pipeline (flat-field illumination removal →
+    /// tone curve → unsharp) instead of the standard per-pixel pipeline. When
+    /// true, all other fields are ignored.
+    pub doc_scan: bool,
 }
 
 /// Resolve a preset by key (mirrors `PRESETS` in processing/index.js).
 pub fn preset(name: &str) -> Option<Preset> {
     Some(match name {
-        "scan_pdf"      => Preset { grayscale: true,  sharpen: true,  brightness: 1.05, contrast: 1.2, invert: false, threshold: None,        clahe: false },
-        "bw"            => Preset { grayscale: true,  sharpen: false, brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        clahe: false },
-        "color"         => Preset { grayscale: false, sharpen: true,  brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        clahe: false },
-        // Full document-scanning pipeline: CLAHE → adaptive threshold → median → dilate.
-        "high_contrast" => Preset { grayscale: true,  sharpen: true,  brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        clahe: true  },
-        "a4_resize"     => Preset { grayscale: false, sharpen: false, brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        clahe: false },
-        "inverted"      => Preset { grayscale: true,  sharpen: false, brightness: 1.0,  contrast: 1.0, invert: true,  threshold: None,        clahe: false },
+        "scan_pdf"      => Preset { grayscale: true,  sharpen: true,  brightness: 1.05, contrast: 1.2, invert: false, threshold: None,        doc_scan: false },
+        "bw"            => Preset { grayscale: true,  sharpen: false, brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        doc_scan: false },
+        "color"         => Preset { grayscale: false, sharpen: true,  brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        doc_scan: false },
+        // Document-scan pipeline: flat-field illumination removal → tone curve → unsharp.
+        "high_contrast" => Preset { grayscale: true,  sharpen: true,  brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        doc_scan: true  },
+        "a4_resize"     => Preset { grayscale: false, sharpen: false, brightness: 1.0,  contrast: 1.0, invert: false, threshold: None,        doc_scan: false },
+        "inverted"      => Preset { grayscale: true,  sharpen: false, brightness: 1.0,  contrast: 1.0, invert: true,  threshold: None,        doc_scan: false },
         _ => return None,
     })
 }
@@ -88,8 +89,8 @@ pub fn clamp_u8(v: f32) -> u8 {
 
 /// Apply a preset's pixel pipeline to an RGB canvas.
 ///
-/// When `p.clahe` is true, delegates to the full CLAHE document pipeline
-/// (grayscale → CLAHE → adaptive threshold → median denoise → dilate).
+/// When `p.doc_scan` is true, delegates to the full document-scan pipeline
+/// (flat-field illumination removal → tone curve → unsharp mask).
 /// Otherwise runs the standard per-pixel pipeline:
 ///   1. Grayscale (optional)
 ///   2. Brightness × contrast
@@ -97,7 +98,7 @@ pub fn clamp_u8(v: f32) -> u8 {
 ///   4. Unsharp mask (optional)
 ///   5. Threshold binarization (optional)
 pub fn apply_preset_pixels(canvas: RgbImage, p: &Preset) -> RgbImage {
-    if p.clahe {
+    if p.doc_scan {
         return apply_high_contrast(canvas);
     }
 
@@ -132,25 +133,35 @@ pub fn apply_preset_pixels(canvas: RgbImage, p: &Preset) -> RgbImage {
     canvas
 }
 
-// ── High-contrast document pipeline ─────────────────────────────────────────
+// ── High-contrast document-scan pipeline ─────────────────────────────────────
 //
-// Pipeline (matches the spec):
-//   1. Grayscale (ITU-R BT.709 luma weights)
-//   2. CLAHE — 8×8 tile grid, clip limit 3.0 — normalises local contrast so
-//      faded text becomes as dark as normal text regardless of lighting
-//   3. Adaptive threshold (Bradley–Roth integral-image method) — binarises
-//      based on each pixel's local neighbourhood mean rather than a global
-//      value, handles uneven lighting across the card
-//   4. Median 3×3 denoise — removes salt-and-pepper noise from thresholding
-//      while keeping crisp text edges
-//   5. Binary dilation (3×3 min filter) — expands dark (text) pixels by one
-//      pixel, strengthening thin strokes so they survive printing
+// Produces a clean "scanned document" look: crisp dark text on a bright, even,
+// near-white background — NOT a 1-bit monotone threshold. Grayscale tonality is
+// preserved so text edges stay smooth and the result reads naturally.
+//
+// Pipeline:
+//   1. Grayscale (ITU-R BT.709 luma weights).
+//   2. Background (illumination) estimate — a local maximum followed by a wide
+//      box blur. The max-filter samples the paper brightness while ignoring the
+//      darker text/marks; the blur turns it into a smooth, slowly-varying
+//      lighting field.
+//   3. Flat-field normalisation — divide each pixel by its local background
+//      (`pixel / bg × 255`). This cancels shadows and uneven lighting, pushing
+//      the paper to a uniform near-white regardless of how the photo was lit.
+//   4. Tone curve — black/white-point levels stretch plus a mild gamma that
+//      deepens the text without crushing the edge anti-aliasing (so it never
+//      becomes a harsh monotone bitmap).
+//   5. Unsharp mask — crisps up the text strokes for a sharp scanned feel.
 
-/// Full CLAHE-based document pipeline. Called when `Preset.clahe` is true.
+/// Full document-scan pipeline. Called when `Preset.doc_scan` is true.
 pub fn apply_high_contrast(src: RgbImage) -> RgbImage {
-    let (w, h) = (src.width(), src.height());
+    let w = src.width() as usize;
+    let h = src.height() as usize;
+    if w == 0 || h == 0 {
+        return src;
+    }
 
-    // 1. Grayscale (BT.709 weights for accurate perceptual luminance)
+    // 1. Grayscale (BT.709 weights for accurate perceptual luminance).
     let gray: Vec<u8> = src
         .pixels()
         .map(|p| {
@@ -159,200 +170,151 @@ pub fn apply_high_contrast(src: RgbImage) -> RgbImage {
         })
         .collect();
 
-    // 2. CLAHE
-    let equalized = clahe_8x8(&gray, w as usize, h as usize);
+    // 2. Background illumination estimate: local max (samples paper level while
+    //    ignoring dark text) then a wide blur to smooth it into a lighting field.
+    let min_dim = w.min(h);
+    let r_max = (min_dim / 20).clamp(8, 35);
+    let r_blur = (min_dim / 12).clamp(12, 60);
+    let lifted = separable_max(&gray, w, h, r_max);
+    let bg = separable_blur(&lifted, w, h, r_blur);
 
-    // 3. Adaptive threshold
-    let binary = adaptive_threshold(&equalized, w as usize, h as usize);
-
-    // 4. Median 3×3 denoise
-    let denoised = median_3x3(&binary, w as usize, h as usize);
-
-    // 5. Sharpen text edges via binary dilation (strengthens thin strokes)
-    let sharpened = dilate_text(&denoised, w as usize, h as usize);
-
-    gray_to_rgb(&sharpened, w, h)
-}
-
-/// CLAHE with an 8×8 tile grid and clip limit 3.0.
-///
-/// For each tile: build histogram → clip at (3 × tile_pixels / 256) →
-/// redistribute excess uniformly → build CDF → derive 256-entry LUT.
-/// Output pixels are bilinearly interpolated between the 4 surrounding tile LUTs.
-fn clahe_8x8(gray: &[u8], w: usize, h: usize) -> Vec<u8> {
-    const GX: usize = 8;
-    const GY: usize = 8;
-    const CLIP: f32 = 3.0;
-
-    let tile_w = (w + GX - 1) / GX;
-    let tile_h = (h + GY - 1) / GY;
-
-    // Build one 256-entry LUT per tile.
-    let mut luts = [[0u8; 256]; GX * GY];
-    for ty in 0..GY {
-        for tx in 0..GX {
-            let x0 = tx * tile_w;
-            let y0 = ty * tile_h;
-            let x1 = (x0 + tile_w).min(w);
-            let y1 = (y0 + tile_h).min(h);
-            let n = (x1 - x0) * (y1 - y0);
-            if n == 0 {
-                continue;
-            }
-
-            let mut hist = [0u32; 256];
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    hist[gray[y * w + x] as usize] += 1;
-                }
-            }
-
-            // Clip and redistribute excess.
-            let clip_at = ((CLIP * n as f32 / 256.0).round() as u32).max(1);
-            let mut excess = 0u32;
-            for v in hist.iter_mut() {
-                if *v > clip_at {
-                    excess += *v - clip_at;
-                    *v = clip_at;
-                }
-            }
-            let add = excess / 256;
-            let rem = (excess % 256) as usize;
-            for v in hist.iter_mut() {
-                *v += add;
-            }
-            for v in hist.iter_mut().take(rem) {
-                *v += 1;
-            }
-
-            // Cumulative sum → normalised LUT.
-            let mut cdf = 0u32;
-            let lut = &mut luts[ty * GX + tx];
-            for (i, &hv) in hist.iter().enumerate() {
-                cdf += hv;
-                lut[i] = ((cdf as f32 / n as f32) * 255.0) as u8;
-            }
-        }
-    }
-
-    // Bilinear interpolation between the 4 surrounding tile LUTs.
+    // 3. Flat-field normalise + 4. tone curve (levels + gamma).
+    //    LO/HI are the black/white points after normalisation; GAMMA > 1 deepens
+    //    the text while leaving the (already ~white) background untouched.
+    const LO: f32 = 25.0;
+    const HI: f32 = 200.0;
+    const GAMMA: f32 = 1.5;
+    let span = HI - LO;
     let mut out = vec![0u8; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            let v = gray[y * w + x] as usize;
-
-            // Fractional position in the tile grid (0.0 = centre of tile 0).
-            let fx = (x as f32 + 0.5) / tile_w as f32 - 0.5;
-            let fy = (y as f32 + 0.5) / tile_h as f32 - 0.5;
-
-            let tx0 = (fx.floor() as isize).clamp(0, GX as isize - 1) as usize;
-            let ty0 = (fy.floor() as isize).clamp(0, GY as isize - 1) as usize;
-            let tx1 = (tx0 + 1).min(GX - 1);
-            let ty1 = (ty0 + 1).min(GY - 1);
-
-            let ax = (fx - tx0 as f32).clamp(0.0, 1.0);
-            let ay = (fy - ty0 as f32).clamp(0.0, 1.0);
-
-            let p00 = luts[ty0 * GX + tx0][v] as f32;
-            let p10 = luts[ty0 * GX + tx1][v] as f32;
-            let p01 = luts[ty1 * GX + tx0][v] as f32;
-            let p11 = luts[ty1 * GX + tx1][v] as f32;
-
-            let top = p00 + (p10 - p00) * ax;
-            let bot = p01 + (p11 - p01) * ax;
-            out[y * w + x] = (top + (bot - top) * ay) as u8;
-        }
+    for i in 0..w * h {
+        let bg_v = (bg[i] as f32).max(1.0);
+        let flat = (gray[i] as f32 / bg_v * 255.0).min(255.0);
+        let t = ((flat - LO) / span).clamp(0.0, 1.0).powf(GAMMA);
+        out[i] = (t * 255.0) as u8;
     }
-    out
+
+    // 5. Unsharp mask for crisp text edges (mild — avoids ringing halos).
+    let rgb = gray_to_rgb(&out, w as u32, h as u32);
+    image::imageops::unsharpen(&rgb, 0.8, 2)
 }
 
-/// Adaptive (local) binarisation — Bradley–Roth integral-image method.
-///
-/// Window radius = image_min_dim / 16, clamped to [5, 75] pixels.
-/// A pixel is classified as black when its value falls more than 10% below
-/// the local window mean: `pixel < mean × 0.90`.
-fn adaptive_threshold(gray: &[u8], w: usize, h: usize) -> Vec<u8> {
-    const K: f32 = 0.10; // fraction below local mean that triggers "black"
-    let half = (w.min(h) / 16).clamp(5, 75);
+/// Separable sliding-window maximum with a square `(2r+1)` window. O(w·h):
+/// a horizontal pass then a vertical pass, each via a monotonic deque.
+/// Used to estimate the paper brightness ignoring dark text strokes.
+fn separable_max(src: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
+    let mut tmp = vec![0u8; w * h];
+    let mut line = vec![0u8; w.max(h)];
+    let mut outl = vec![0u8; w.max(h)];
 
-    // Compute 2-D integral image with u64 to avoid overflow on large tiles.
-    let mut ii = vec![0u64; (w + 1) * (h + 1)];
+    // Horizontal pass (rows are contiguous).
     for y in 0..h {
-        for x in 0..w {
-            let v = gray[y * w + x] as u64;
-            ii[(y + 1) * (w + 1) + (x + 1)] = v
-                + ii[y * (w + 1) + (x + 1)]
-                + ii[(y + 1) * (w + 1) + x]
-                - ii[y * (w + 1) + x];
+        slide_max_1d(&src[y * w..y * w + w], r, &mut outl[..w]);
+        tmp[y * w..y * w + w].copy_from_slice(&outl[..w]);
+    }
+    // Vertical pass (gather each column into a line buffer).
+    let mut dst = vec![0u8; w * h];
+    for x in 0..w {
+        for y in 0..h {
+            line[y] = tmp[y * w + x];
+        }
+        slide_max_1d(&line[..h], r, &mut outl[..h]);
+        for y in 0..h {
+            dst[y * w + x] = outl[y];
         }
     }
+    dst
+}
 
-    let mut out = vec![255u8; w * h];
-    for y in 0..h {
-        let y0 = y.saturating_sub(half);
-        let y1 = (y + half + 1).min(h);
-        for x in 0..w {
-            let x0 = x.saturating_sub(half);
-            let x1 = (x + half + 1).min(w);
-            let count = ((x1 - x0) * (y1 - y0)) as f32;
-            let sum = (ii[y1 * (w + 1) + x1]
-                - ii[y0 * (w + 1) + x1]
-                - ii[y1 * (w + 1) + x0]
-                + ii[y0 * (w + 1) + x0]) as f32;
-            if (gray[y * w + x] as f32) < (sum / count) * (1.0 - K) {
-                out[y * w + x] = 0;
+/// 1-D centred sliding-window maximum (window radius `r`) via a monotonic deque.
+fn slide_max_1d(line: &[u8], r: usize, out: &mut [u8]) {
+    let n = line.len();
+    let mut dq: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for i in 0..n {
+        while let Some(&b) = dq.back() {
+            if line[b] <= line[i] {
+                dq.pop_back();
+            } else {
+                break;
             }
         }
-    }
-    out
-}
-
-/// 3×3 median filter. Removes isolated noise pixels while preserving edges.
-fn median_3x3(img: &[u8], w: usize, h: usize) -> Vec<u8> {
-    let mut out = img.to_vec();
-    for y in 1..h - 1 {
-        for x in 1..w - 1 {
-            let mut win = [
-                img[(y - 1) * w + (x - 1)],
-                img[(y - 1) * w + x],
-                img[(y - 1) * w + (x + 1)],
-                img[y * w + (x - 1)],
-                img[y * w + x],
-                img[y * w + (x + 1)],
-                img[(y + 1) * w + (x - 1)],
-                img[(y + 1) * w + x],
-                img[(y + 1) * w + (x + 1)],
-            ];
-            win.sort_unstable();
-            out[y * w + x] = win[4]; // median of 9
-        }
-    }
-    out
-}
-
-/// 3×3 binary dilation (min-filter over the neighbourhood).
-/// Expands dark (text) pixels by one pixel, strengthening thin strokes.
-fn dilate_text(binary: &[u8], w: usize, h: usize) -> Vec<u8> {
-    let mut out = binary.to_vec();
-    for y in 1..h - 1 {
-        for x in 1..w - 1 {
-            if binary[y * w + x] != 0 {
-                // Only check neighbours when the centre is white (fast path).
-                let any_black = binary[(y - 1) * w + (x - 1)] == 0
-                    || binary[(y - 1) * w + x] == 0
-                    || binary[(y - 1) * w + (x + 1)] == 0
-                    || binary[y * w + (x - 1)] == 0
-                    || binary[y * w + (x + 1)] == 0
-                    || binary[(y + 1) * w + (x - 1)] == 0
-                    || binary[(y + 1) * w + x] == 0
-                    || binary[(y + 1) * w + (x + 1)] == 0;
-                if any_black {
-                    out[y * w + x] = 0;
+        dq.push_back(i);
+        // Emit output for position p once the right edge has advanced r past it.
+        if i >= r {
+            let p = i - r;
+            let left = p.saturating_sub(r);
+            while let Some(&f) = dq.front() {
+                if f < left {
+                    dq.pop_front();
+                } else {
+                    break;
                 }
             }
+            out[p] = line[*dq.front().unwrap()];
         }
     }
-    out
+    // Tail: positions whose window right-edge would run past the end.
+    for p in n.saturating_sub(r)..n {
+        let left = p.saturating_sub(r);
+        while let Some(&f) = dq.front() {
+            if f < left {
+                dq.pop_front();
+            } else {
+                break;
+            }
+        }
+        if let Some(&f) = dq.front() {
+            out[p] = line[f];
+        }
+    }
+}
+
+/// Separable box blur with a `(2r+1)` window via running sums. O(w·h).
+fn separable_blur(src: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
+    let mut tmp = vec![0u8; w * h];
+    let mut line = vec![0u8; w.max(h)];
+    let mut outl = vec![0u8; w.max(h)];
+
+    for y in 0..h {
+        blur_1d(&src[y * w..y * w + w], r, &mut outl[..w]);
+        tmp[y * w..y * w + w].copy_from_slice(&outl[..w]);
+    }
+    let mut dst = vec![0u8; w * h];
+    for x in 0..w {
+        for y in 0..h {
+            line[y] = tmp[y * w + x];
+        }
+        blur_1d(&line[..h], r, &mut outl[..h]);
+        for y in 0..h {
+            dst[y * w + x] = outl[y];
+        }
+    }
+    dst
+}
+
+/// 1-D centred box blur (window radius `r`) via an incremental running sum.
+fn blur_1d(line: &[u8], r: usize, out: &mut [u8]) {
+    let n = line.len();
+    if n == 0 {
+        return;
+    }
+    let init = r.min(n - 1);
+    let mut sum: u32 = 0;
+    for v in &line[..=init] {
+        sum += *v as u32;
+    }
+    let mut cnt = (init + 1) as u32;
+    for i in 0..n {
+        out[i] = (sum / cnt) as u8;
+        let add = i + 1 + r;
+        if add < n {
+            sum += line[add] as u32;
+            cnt += 1;
+        }
+        if i >= r {
+            sum -= line[i - r] as u32;
+            cnt -= 1;
+        }
+    }
 }
 
 /// Pack a grayscale byte slice into an [`RgbImage`].

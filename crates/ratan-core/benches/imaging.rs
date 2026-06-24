@@ -32,7 +32,7 @@ fn bench_preset_pixels(c: &mut Criterion) {
     let p_scan = preset("scan_pdf").unwrap();
 
     let mut g = c.benchmark_group("apply_preset_pixels 600×800");
-    g.bench_function("high_contrast (grayscale+contrast+sharpen+threshold)", |b| {
+    g.bench_function("high_contrast (doc-scan: flat-field+levels+unsharp)", |b| {
         b.iter(|| apply_preset_pixels(black_box(canvas.clone()), black_box(&p_high)))
     });
     g.bench_function("bw (grayscale only)", |b| {
