@@ -29,6 +29,7 @@ pub fn router() -> Router<SharedState> {
         .route("/:id/save", post(save_to_pc))
         .route("/:id/process", post(process))
         .route("/:id/detect-page", post(detect_page))
+        .route("/:id/warp", post(warp_page))
         .route("/:id/print", post(print_job))
         .route("/batch/:batch_id/process", post(batch_process))
         .route("/batch/:batch_id/print", post(batch_print))
@@ -182,6 +183,62 @@ async fn detect_page(State(st): State<SharedState>, Path(id): Path<i64>) -> AppR
             },
         );
         activity::log(c, Some(id), "page_cropped", Some(&format!("Page detected & cropped → {dest_name} ({}×{})", cropped.width, cropped.height)));
+        j
+    })?;
+    updated.map(Json).ok_or(AppError::NotFound)
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WarpBody {
+    /// Four corners normalized to `[0,1]`, any order (re-ordered server-side).
+    #[serde(default)]
+    corners: Vec<[f64; 2]>,
+}
+
+/// Perspective-flatten this job's photo using the operator-adjusted corners and
+/// replace the job's source with the flattened crop (the original file stays on
+/// disk). The job drops back to `incoming` so it re-processes with a preset —
+/// same lifecycle as `detect_page`.
+async fn warp_page(State(st): State<SharedState>, Path(id): Path<i64>, body: Bytes) -> AppResult<Json<jobs::Job>> {
+    let b: WarpBody = parse_body(&body);
+    if b.corners.len() != 4 {
+        return Err(AppError::bad("warp needs exactly 4 corners"));
+    }
+    let corners: [[f64; 2]; 4] = [b.corners[0], b.corners[1], b.corners[2], b.corners[3]];
+
+    let job = st.db.with(|c| jobs::get_job(c, id))?.ok_or(AppError::NotFound)?;
+    if job.job_type.as_deref() != Some("image") {
+        return Err(AppError::bad("flatten works on photos (images) only"));
+    }
+    let src = media::absolute_path(&st.config, &job.storage_folder, &job.filename);
+    if !src.exists() {
+        return Err(AppError::internal("source image file missing"));
+    }
+    let bytes = tokio::fs::read(&src).await?;
+    let cropped = tokio::task::spawn_blocking(move || crate::paper::warp_corners_to_jpeg(&bytes, &corners))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+        .map_err(|e| AppError::bad(e.to_string()))?;
+
+    // Write next to the original under a new name so re-running stays lossless.
+    let stem = job.filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(&job.filename);
+    let dest_name = format!("{stem}.flat.jpg");
+    let dest = media::absolute_path(&st.config, &job.storage_folder, &dest_name);
+    tokio::fs::write(&dest, &cropped.jpeg).await?;
+
+    let size = cropped.jpeg.len() as i64;
+    let updated = st.db.with(|c| {
+        let j = jobs::update_job(
+            c,
+            id,
+            &jobs::JobPatch {
+                filename: Some(dest_name.clone()),
+                size: Some(size),
+                status: Some("incoming".into()),
+                ..Default::default()
+            },
+        );
+        activity::log(c, Some(id), "page_flattened", Some(&format!("Corners flattened → {dest_name} ({}×{})", cropped.width, cropped.height)));
         j
     })?;
     updated.map(Json).ok_or(AppError::NotFound)

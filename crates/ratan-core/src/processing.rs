@@ -201,16 +201,15 @@ pub struct CollageItem {
     pub flip_v: bool,
 }
 
-/// Cell rectangles as page fractions [x, y, w, h] (top-down origin). Both
-/// photos sit in the TOP HALF of the A4 page (the bottom half stays blank for
-/// stamps/signatures or to fold the sheet). MUST stay in sync with
-/// `COLLAGE_CELLS` in the frontend so the preview matches output.
+/// Cell rectangles as page fractions [x, y, w, h] (top-down origin). MUST stay
+/// in sync with `COLLAGE_CELLS` in the frontend so the preview matches output.
 fn collage_cells(layout: &str) -> [[f64; 4]; 2] {
     match layout {
-        // Side by side in the top half — two portrait cells.
-        "horizontal" => [[0.05, 0.045, 0.43, 0.435], [0.52, 0.045, 0.43, 0.435]],
-        // "vertical" (default): stacked in the top half — the usual ID front/back sheet.
-        _ => [[0.06, 0.045, 0.88, 0.205], [0.06, 0.275, 0.88, 0.205]],
+        // Side by side at the TOP of the page — two cells.
+        "horizontal" => [[0.04, 0.04, 0.44, 0.28], [0.52, 0.04, 0.44, 0.28]],
+        // "vertical" (default): two wide cells stacked and CENTERED on the page —
+        // the usual ID front/back sheet, cut along the middle gap.
+        _ => [[0.16, 0.235, 0.68, 0.24], [0.16, 0.525, 0.68, 0.24]],
     }
 }
 

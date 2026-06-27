@@ -1,165 +1,39 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { X, Check, Images, RotateCcw, RotateCw, FlipHorizontal2, FlipVertical2, ImageIcon, Crosshair } from 'lucide-react';
+import { X, Images, RotateCcw, RotateCw, FlipHorizontal2, FlipVertical2, ImageIcon, Crop, SquarePen } from 'lucide-react';
 import { api, fileUrl } from '@/lib/api';
 import { Avatar } from './Avatar';
 import { Spinner } from './Spinner';
 
-// Detect the ID card bounding box using Sobel gradient edge projection.
-// A box blur first suppresses fine background texture (fabric patterns, wallpaper)
-// so only large-scale card edges remain. Gx column projection finds left/right
-// boundaries; Gy row projection finds top/bottom boundaries. Works regardless of
-// background color/pattern — the old corner-sampling approach broke on patterned
-// or multi-colored backgrounds like fabric, printed sheets, etc.
-// Returns { imgW, imgH, bounds:{x,y,w,h} } (0–1 normalized).
-async function detectIdBounds(imgSrc) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const { naturalWidth: imgW, naturalHeight: imgH } = img;
-      const MAX = 600;
-      const sx = Math.min(1, MAX / Math.max(imgW, imgH));
-      const W = Math.max(1, Math.round(imgW * sx));
-      const H = Math.max(1, Math.round(imgH * sx));
-      const canvas = document.createElement('canvas');
-      canvas.width = W; canvas.height = H;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, W, H);
-      const { data } = ctx.getImageData(0, 0, W, H);
-
-      // BT.601 luma
-      const gray = new Uint8Array(W * H);
-      for (let i = 0; i < W * H; i++)
-        gray[i] = (data[i * 4] * 77 + data[i * 4 + 1] * 150 + data[i * 4 + 2] * 29) >> 8;
-
-      // Box blur: radius ≈ 2% of smaller dimension (min 3 px).
-      // Kills fine background texture while preserving the card's large-scale boundary.
-      const r = Math.max(3, Math.round(Math.min(W, H) * 0.02));
-      const bl = idBoxBlur(gray, W, H, r);
-
-      // Sobel: Gx detects vertical edges (left/right card boundary);
-      //        Gy detects horizontal edges (top/bottom card boundary).
-      const agx = new Float32Array(W * H);
-      const agy = new Float32Array(W * H);
-      for (let y = 1; y < H - 1; y++) {
-        for (let x = 1; x < W - 1; x++) {
-          const gx =
-            -bl[(y-1)*W+x-1] + bl[(y-1)*W+x+1]
-            - 2*bl[y*W+x-1]  + 2*bl[y*W+x+1]
-            - bl[(y+1)*W+x-1] + bl[(y+1)*W+x+1];
-          const gy =
-            -bl[(y-1)*W+x-1] - 2*bl[(y-1)*W+x] - bl[(y-1)*W+x+1]
-            + bl[(y+1)*W+x-1] + 2*bl[(y+1)*W+x] + bl[(y+1)*W+x+1];
-          agx[y*W+x] = Math.abs(gx);
-          agy[y*W+x] = Math.abs(gy);
-        }
-      }
-
-      // Projection profiles: the card boundary spans many rows/columns so it
-      // produces the dominant peak even against a textured background.
-      const colProj = new Float32Array(W); // sum |Gx| per column → vertical edges
-      const rowProj = new Float32Array(H); // sum |Gy| per row    → horizontal edges
-      for (let y = 0; y < H; y++)
-        for (let x = 0; x < W; x++) {
-          colProj[x] += agx[y*W+x];
-          rowProj[y] += agy[y*W+x];
-        }
-
-      const SC = idSmooth1D(colProj, 3);
-      const SR = idSmooth1D(rowProj, 3);
-
-      // Outer 4% of each dimension may contain hard image-border artefacts — skip them.
-      const mx = Math.round(W * 0.04);
-      const my = Math.round(H * 0.04);
-      const left   = idOuterPeak(SC, mx,     Math.floor(W / 2), +1);
-      const right  = idOuterPeak(SC, W-1-mx, Math.ceil(W / 2),  -1);
-      const top    = idOuterPeak(SR, my,     Math.floor(H / 2), +1);
-      const bottom = idOuterPeak(SR, H-1-my, Math.ceil(H / 2),  -1);
-
-      if (right <= left || bottom <= top) { resolve({ imgW, imgH, bounds: null }); return; }
-      resolve({
-        imgW, imgH,
-        bounds: {
-          x: left / W,
-          y: top / H,
-          w: Math.max(0.1, (right - left) / W),
-          h: Math.max(0.1, (bottom - top) / H),
-        },
-      });
-    };
-    img.onerror = () => resolve({ imgW: 0, imgH: 0, bounds: null });
-    img.src = imgSrc;
-  });
-}
-
-function idBoxBlur(src, W, H, r) {
-  const tmp = new Uint8Array(W * H);
-  const dst = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++) {
-      let s = 0, n = 0;
-      for (let d = -r; d <= r; d++) { const xi = x+d; if (xi >= 0 && xi < W) { s += src[y*W+xi]; n++; } }
-      tmp[y*W+x] = (s / n + 0.5) | 0;
-    }
-  for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++) {
-      let s = 0, n = 0;
-      for (let d = -r; d <= r; d++) { const yi = y+d; if (yi >= 0 && yi < H) { s += tmp[yi*W+x]; n++; } }
-      dst[y*W+x] = (s / n + 0.5) | 0;
-    }
-  return dst;
-}
-
-function idSmooth1D(arr, r) {
-  const n = arr.length, out = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    let s = 0, cnt = 0;
-    for (let d = -r; d <= r; d++) { const j = i+d; if (j >= 0 && j < n) { s += arr[j]; cnt++; } }
-    out[i] = s / cnt;
-  }
-  return out;
-}
-
-// Scan from `start` toward `end` (direction ±1); return the first index where
-// the profile exceeds 30% of the maximum in [start,end] — the leading edge of
-// the dominant gradient peak, i.e. where the card boundary begins.
-function idOuterPeak(profile, start, end, dir) {
-  const lo = Math.min(start, end), hi = Math.max(start, end);
-  let maxVal = 0, maxIdx = lo;
-  for (let i = lo; i <= hi; i++) if (profile[i] > maxVal) { maxVal = profile[i]; maxIdx = i; }
-  const thresh = maxVal * 0.30;
-  for (let i = start; dir > 0 ? i <= maxIdx : i >= maxIdx; i += dir)
-    if (profile[i] >= thresh) return i;
-  return maxIdx;
-}
-
-// Cell rectangles as page fractions [x, y, w, h] (top-down). Both photos live
-// in the TOP HALF of the A4 page — the bottom half stays blank. MUST stay in
-// sync with `collage_cells` in crates/ratan-core/src/processing.rs so the live
+// Cell rectangles as page fractions [x, y, w, h] (top-down). MUST stay in sync
+// with `collage_cells` in crates/ratan-core/src/processing.rs so the live
 // preview matches the generated PDF.
+//   • vertical   — two wide cells stacked and CENTERED on the page (front/back
+//                  of an ID, cut along the middle gap).
+//   • horizontal — two cells side by side at the TOP of the page.
 const COLLAGE_CELLS = {
-  vertical: [[0.06, 0.045, 0.88, 0.205], [0.06, 0.275, 0.88, 0.205]],
-  horizontal: [[0.05, 0.045, 0.43, 0.435], [0.52, 0.045, 0.43, 0.435]],
+  vertical: [[0.16, 0.235, 0.68, 0.24], [0.16, 0.525, 0.68, 0.24]],
+  horizontal: [[0.04, 0.04, 0.44, 0.28], [0.52, 0.04, 0.44, 0.28]],
 };
 
 const DEFAULT_TF = { zoom: 1, panX: 0, panY: 0, rotation: 0, flipH: false, flipV: false };
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-// Tiny inline glyphs for the layout toggle — both variants sit in the top half
-// of the page, mirroring the real A4 placement.
+// Tiny inline glyphs for the layout toggle. The faint outline is the A4 page;
+// the filled bars mirror where the two photos actually land — vertical stacked
+// & centered, horizontal side-by-side at the top.
 function LayoutGlyph({ kind }) {
   return kind === 'vertical' ? (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-      <rect x="2" y="1.5" width="12" height="2.8" rx="0.8" />
-      <rect x="2" y="5.3" width="12" height="2.8" rx="0.8" />
-      <rect x="2" y="9.5" width="12" height="5" rx="0.8" opacity="0.15" />
+      <rect x="1.5" y="1" width="13" height="14" rx="1.2" fill="none" stroke="currentColor" strokeWidth="0.8" opacity="0.35" />
+      <rect x="3.6" y="5.3" width="8.8" height="2.4" rx="0.6" />
+      <rect x="3.6" y="8.3" width="8.8" height="2.4" rx="0.6" />
     </svg>
   ) : (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-      <rect x="2" y="1.5" width="5.6" height="6.6" rx="0.8" />
-      <rect x="8.4" y="1.5" width="5.6" height="6.6" rx="0.8" />
-      <rect x="2" y="9.5" width="12" height="5" rx="0.8" opacity="0.15" />
+      <rect x="1.5" y="1" width="13" height="14" rx="1.2" fill="none" stroke="currentColor" strokeWidth="0.8" opacity="0.35" />
+      <rect x="3" y="2.8" width="4.4" height="4" rx="0.6" />
+      <rect x="8.6" y="2.8" width="4.4" height="4" rx="0.6" />
     </svg>
   );
 }
@@ -167,7 +41,7 @@ function LayoutGlyph({ kind }) {
 // One photo placed inside its A4 cell. translate is in % of the element (which
 // fills the cell), so panX/panY of ±1 shifts by half a cell — matching the
 // server's `pan * (cell/2)`. object-fit:contain gives the same baseline scale.
-function CollageCell({ rect, id, tf, onPan, guides, cellRef }) {
+function CollageCell({ rect, id, version = 0, tf, onPan, guides, cellRef }) {
   const [fx, fy, fw, fh] = rect;
   const drag = useRef(null);
 
@@ -212,7 +86,7 @@ function CollageCell({ rect, id, tf, onPan, guides, cellRef }) {
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={fileUrl(id)}
+        src={`${fileUrl(id)}?v=${version}`}
         alt=""
         draggable={false}
         style={{
@@ -233,6 +107,171 @@ function CollageCell({ rect, id, tf, onPan, guides, cellRef }) {
   );
 }
 
+// Starting corners (TL,TR,BR,BL) for the manual editor — a centered inset
+// rectangle the operator drags onto the document corners.
+const DEFAULT_CORNERS = [
+  { x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1 },
+  { x: 0.9, y: 0.9 }, { x: 0.1, y: 0.9 },
+];
+
+// Full-screen overlay (above the collage modal) for the manual 4-corner crop.
+// The operator drags the corner handles onto the document and "Flatten"
+// perspective-warps the photo server-side — replacing the job's source with the
+// upright crop. Corners are normalized [0,1] in image space.
+function CornerCropOverlay({ id, version, onCancel, onApplied }) {
+  const [corners, setCorners] = useState(() => DEFAULT_CORNERS.map((p) => ({ ...p }))); // [{x,y}×4]
+  const [applying, setApplying] = useState(false);
+  const [err, setErr] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const boxRef = useRef(null);
+  const dragIdx = useRef(null);
+
+  const src = `${fileUrl(id)}?v=${version}`;
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !applying) onCancel?.(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel, applying]);
+
+  function pointerDown(i, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragIdx.current = i;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+  }
+  function pointerMove(e) {
+    if (dragIdx.current == null) return;
+    const r = boxRef.current?.getBoundingClientRect();
+    if (!r || !r.width || !r.height) return;
+    const x = clamp((e.clientX - r.left) / r.width, 0, 1);
+    const y = clamp((e.clientY - r.top) / r.height, 0, 1);
+    setCorners((prev) => prev.map((p, idx) => (idx === dragIdx.current ? { x, y } : p)));
+  }
+  function pointerUp(e) {
+    dragIdx.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  }
+
+  function reset() {
+    setCorners(DEFAULT_CORNERS.map((p) => ({ ...p })));
+    setErr(null);
+  }
+
+  async function apply() {
+    if (!corners || applying) return;
+    setApplying(true);
+    setErr(null);
+    try {
+      await api.warpCorners(id, corners.map((p) => [p.x, p.y]));
+      onApplied?.();
+    } catch (e) {
+      setErr(e.message || 'Could not flatten');
+      setApplying(false);
+    }
+  }
+
+  const polyPoints = corners ? corners.map((p) => `${p.x * 100},${p.y * 100}`).join(' ') : '';
+
+  return (
+    <div
+      onClick={() => { if (!applying) onCancel?.(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70, padding: '3vh 3vw' }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="modal-enter flex flex-col"
+        style={{ background: 'var(--color-bg-surface)', borderRadius: 16, maxWidth: 'min(94vw, 760px)', maxHeight: '94vh', overflow: 'hidden', boxShadow: '0 24px 80px rgba(0,0,0,0.3)' }}
+      >
+        {/* Header */}
+        <div className="flex items-center gap-3" style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)' }}>
+          <span className="flex items-center justify-center rounded-pill" style={{ width: 30, height: 30, background: 'var(--color-brand)', color: 'var(--color-brand-fg)' }}>
+            <Crop size={15} />
+          </span>
+          <div className="flex flex-col min-w-0">
+            <span className="font-bold" style={{ fontSize: 15 }}>Adjust corners &amp; flatten</span>
+            <span className="text-xs text-text-secondary">Drag the 4 dots onto the document corners, then flatten.</span>
+          </div>
+          <button
+            onClick={() => { if (!applying) onCancel?.(); }}
+            aria-label="close"
+            className="ml-auto flex items-center justify-center text-text-secondary hover:text-text-primary"
+            style={{ width: 32, height: 32, borderRadius: 999, background: 'var(--color-bg-overlay)', border: 'none', cursor: 'pointer' }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Image + corner handles */}
+        <div className="flex items-center justify-center" style={{ padding: 16, background: 'var(--color-bg-app)', minHeight: 0, flex: 1, overflow: 'auto' }}>
+          <div ref={boxRef} style={{ position: 'relative', display: 'inline-block', lineHeight: 0, touchAction: 'none' }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={src}
+              alt=""
+              draggable={false}
+              onLoad={() => setLoaded(true)}
+              style={{ display: 'block', maxWidth: '100%', maxHeight: '66vh', objectFit: 'contain', userSelect: 'none', borderRadius: 4 }}
+            />
+            {loaded && corners && (
+              <>
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+                  <polygon points={polyPoints} fill="rgba(59,130,246,0.16)" stroke="#3b82f6" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+                </svg>
+                {corners.map((p, i) => (
+                  <div
+                    key={i}
+                    onPointerDown={(e) => pointerDown(i, e)}
+                    onPointerMove={pointerMove}
+                    onPointerUp={pointerUp}
+                    onPointerCancel={pointerUp}
+                    style={{
+                      position: 'absolute',
+                      left: `${p.x * 100}%`,
+                      top: `${p.y * 100}%`,
+                      width: 20, height: 20, marginLeft: -10, marginTop: -10,
+                      borderRadius: '50%',
+                      background: '#fff',
+                      border: '3px solid #3b82f6',
+                      boxShadow: '0 1px 5px rgba(0,0,0,0.45)',
+                      cursor: 'grab',
+                      touchAction: 'none',
+                    }}
+                  />
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center gap-3" style={{ padding: '12px 16px', borderTop: '1px solid var(--color-border)' }}>
+          <button
+            type="button"
+            onClick={reset}
+            disabled={applying}
+            className="flex items-center gap-1 text-xs font-semibold rounded-pill"
+            style={{ padding: '9px 14px', background: 'var(--color-bg-overlay)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', cursor: applying ? 'wait' : 'pointer' }}
+          >
+            <RotateCcw size={13} /> Reset corners
+          </button>
+          {err && <span className="text-xs" style={{ color: 'var(--color-tag-pink-text)' }}>{err}</span>}
+          <button
+            type="button"
+            onClick={apply}
+            disabled={applying || !corners}
+            className="ml-auto flex items-center justify-center gap-2 text-sm font-semibold rounded-pill"
+            style={{ padding: '10px 20px', background: 'var(--color-brand)', color: 'var(--color-brand-fg)', border: 'none', cursor: applying || !corners ? 'not-allowed' : 'pointer', opacity: applying || !corners ? 0.6 : 1 }}
+          >
+            {applying ? <Spinner size={14} color="var(--color-brand-fg)" /> : <Crop size={14} />}
+            {applying ? 'Flattening…' : 'Flatten'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // 2-photo collage builder for double-sided ID prints. Phase 1: pick exactly two
 // photos. Phase 2: choose horizontal/vertical and drag/zoom each onto an A4
 // page. Produces a collage *image* (an incoming job) and opens the process popup
@@ -246,7 +285,8 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
   const [guides, setGuides] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState(null);
-  const [detectingSlot, setDetectingSlot] = useState(null);
+  const [cropSlot, setCropSlot] = useState(null); // slot whose corner editor is open
+  const [versions, setVersions] = useState([0, 0]); // bump to cache-bust a flattened cell
   const cellEl0 = useRef(null);
   const cellEl1 = useRef(null);
   const cellEls = [cellEl0, cellEl1];
@@ -278,38 +318,18 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
   function back() {
     setSelected([]);
     setTransforms([{ ...DEFAULT_TF }, { ...DEFAULT_TF }]);
+    setVersions([0, 0]);
     setErr(null);
   }
 
-  // Detect the ID card boundaries in the image and auto-fit zoom + pan to fill the cell.
-  async function autoFit(slotIndex) {
-    const id = selected[slotIndex];
-    if (!id || detectingSlot !== null) return;
-    setDetectingSlot(slotIndex);
-    try {
-      const { imgW, imgH, bounds } = await detectIdBounds(fileUrl(id));
-      if (!bounds || !imgW || !imgH) return;
-      const cellEl = cellEls[slotIndex].current;
-      if (!cellEl) return;
-      const { width: cellW, height: cellH } = cellEl.getBoundingClientRect();
-      if (!cellW || !cellH) return;
-      // objectFit:contain scale
-      const S = Math.min(cellW / imgW, cellH / imgH);
-      const bCx = bounds.x + bounds.w / 2;
-      const bCy = bounds.y + bounds.h / 2;
-      // Pan units: translate(panX*50%, panY*50%) on the 100%×100% img element
-      const panX = -2 * (bCx - 0.5) * (imgW * S / cellW);
-      const panY = -2 * (bCy - 0.5) * (imgH * S / cellH);
-      // Zoom to fill cell with detected card bounds, 8% breathing room
-      const zoom = Math.min(cellW / (bounds.w * imgW * S), cellH / (bounds.h * imgH * S)) * 0.92;
-      setSlot(slotIndex, {
-        panX: clamp(panX, -1.5, 1.5),
-        panY: clamp(panY, -1.5, 1.5),
-        zoom: clamp(zoom, 0.3, 3),
-      });
-    } finally {
-      setDetectingSlot(null);
-    }
+  // The corner editor flattened the photo in `slot` (its source file was
+  // replaced server-side). Reset that cell's transform so the upright crop fits
+  // cleanly, and bump its version to bust the cached <img>.
+  function onCropApplied(slot) {
+    resetSlot(slot);
+    setVersions((prev) => prev.map((v, i) => (i === slot ? v + 1 : v)));
+    setCropSlot(null);
+    setErr(null);
   }
 
   async function generate() {
@@ -455,19 +475,20 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                     key={id}
                     rect={cells[i]}
                     id={id}
+                    version={versions[i]}
                     tf={transforms[i]}
                     guides={guides}
                     onPan={(panX, panY) => setSlot(i, { panX, panY })}
                     cellRef={cellEls[i]}
                   />
                 ))}
-                {/* Cut hint between the two cells (both live in the top half) */}
+                {/* Cut hint in the gap between the two cells. */}
                 {guides && (
                   <div
                     style={
                       layout === 'vertical'
-                        ? { position: 'absolute', left: '4%', right: '4%', top: '26.25%', borderTop: '1px dashed var(--color-text-muted)' }
-                        : { position: 'absolute', top: '3%', height: '46.5%', left: '50%', borderLeft: '1px dashed var(--color-text-muted)' }
+                        ? { position: 'absolute', left: '16%', right: '16%', top: '49.5%', borderTop: '1px dashed var(--color-text-muted)' }
+                        : { position: 'absolute', top: '4%', height: '28%', left: '50%', borderLeft: '1px dashed var(--color-text-muted)' }
                     }
                   />
                 )}
@@ -531,13 +552,12 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
                       </span>
                       <button
                         type="button"
-                        onClick={() => autoFit(i)}
-                        disabled={detectingSlot !== null}
-                        title="Auto-detect ID card boundaries and fit to cell"
+                        onClick={() => setCropSlot(i)}
+                        title="Mark the document corners and flatten the photo"
                         className="ml-auto flex items-center gap-1 text-xs font-semibold"
-                        style={{ background: 'none', border: 'none', cursor: detectingSlot !== null ? 'wait' : 'pointer', color: 'var(--color-brand)', flexShrink: 0 }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-brand)', flexShrink: 0 }}
                       >
-                        {detectingSlot === i ? <Spinner size={12} color="var(--color-brand)" /> : <Crosshair size={12} />} Auto Detect
+                        <SquarePen size={12} /> Edit
                       </button>
                       <button
                         type="button"
@@ -618,8 +638,8 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
               })}
 
               <p className="text-xs text-text-secondary" style={{ lineHeight: 1.5 }}>
-                Tip: drag a photo in the preview to slide it; use the sliders to zoom and straighten it.
-                Both photos print on the top half of the A4 — the dashed lines show where to cut.
+                Tip: use <b>Edit</b> to mark a tilted ID's corners and straighten it, then drag it in the
+                preview to slide it and the sliders to zoom. The dashed lines show where to cut.
                 After you create it, pick a preset (e.g. <b>High Contrast</b> for a scanned look) and print.
               </p>
 
@@ -663,6 +683,15 @@ export function CollageModal({ jobs = [], onClose, onCreated }) {
           </button>
         </div>
       </div>
+
+      {cropSlot !== null && selected[cropSlot] != null && (
+        <CornerCropOverlay
+          id={selected[cropSlot]}
+          version={versions[cropSlot]}
+          onCancel={() => setCropSlot(null)}
+          onApplied={() => onCropApplied(cropSlot)}
+        />
+      )}
     </div>
   );
 }

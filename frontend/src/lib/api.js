@@ -49,6 +49,10 @@ export const api = {
   // perspective-corrected crop (job returns to "incoming" for re-processing).
   detectPage: (id, signal) =>
     request(`/jobs/${id}/detect-page`, { method: 'POST', signal }),
+  // Perspective-flatten a photo to the given 4 corners (normalized [0,1]) and
+  // replace the job's source with the flattened crop (job returns to "incoming").
+  warpCorners: (id, corners, signal) =>
+    request(`/jobs/${id}/warp`, { method: 'POST', body: JSON.stringify({ corners }), signal }),
   health: () => request('/health'),
   status: () => request('/system/status'),
   qr: () => request('/system/whatsapp/qr'),

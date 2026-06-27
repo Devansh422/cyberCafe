@@ -69,9 +69,19 @@ export function TaskCard({
     : 'var(--color-bg-surface)';
 
   return (
-    <button
-      type="button"
+    // Card is a div with button semantics (not a real <button>) so the inner
+    // delete <button> isn't nested inside one — nested buttons are invalid HTML
+    // and trigger a React hydration error.
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick?.(e);
+        }
+      }}
       className={`text-left flex transition-all`}
       style={{
         background,
@@ -232,7 +242,7 @@ export function TaskCard({
           </div>
         </>
       )}
-    </button>
+    </div>
   );
 }
 

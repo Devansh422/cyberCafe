@@ -28,38 +28,65 @@ pub struct CroppedPage {
 pub fn detect_and_crop_page(bytes: &[u8]) -> anyhow::Result<CroppedPage> {
     let img = crate::imaging::load_oriented(bytes)?.to_rgb8();
     let (w, h) = (img.width(), img.height());
+    let Some(src) = detect_quad(&img) else {
+        anyhow::bail!("no page detected — make sure the paper contrasts with the surface behind it");
+    };
+    crop_to_quad(&img, &src, w, h)
+}
 
-    // Downscale for detection.
+/// Perspective-flatten `bytes` using user-supplied corners, given **normalized**
+/// to `[0,1]` (any order — re-ordered to TL,TR,BR,BL here). Returns the warped
+/// rectangle as a JPEG. Backs the manual 4-corner crop in the collage editor.
+pub fn warp_corners_to_jpeg(bytes: &[u8], corners: &[[f64; 2]; 4]) -> anyhow::Result<CroppedPage> {
+    let img = crate::imaging::load_oriented(bytes)?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    let (wf, hf) = (w as f64, h as f64);
+    let clamp_pt = |p: [f64; 2]| ((p[0].clamp(0.0, 1.0) * wf), (p[1].clamp(0.0, 1.0) * hf));
+    let src = order_quad([
+        clamp_pt(corners[0]),
+        clamp_pt(corners[1]),
+        clamp_pt(corners[2]),
+        clamp_pt(corners[3]),
+    ]);
+    crop_to_quad(&img, &src, w, h)
+}
+
+/// Detect the document quad in a full-resolution photo. Returns corners in
+/// full-res pixel coords (TL,TR,BR,BL) or `None`. Detection runs on a downscaled
+/// copy for speed; corners are mapped back up.
+fn detect_quad(img: &RgbImage) -> Option<[(f64, f64); 4]> {
+    let (w, h) = (img.width(), img.height());
     let scale = (DETECT_MAX as f32 / w as f32).min(DETECT_MAX as f32 / h as f32).min(1.0);
     let dw = ((w as f32 * scale).round() as u32).max(8);
     let dh = ((h as f32 * scale).round() as u32).max(8);
-    let small = image::imageops::resize(&img, dw, dh, image::imageops::FilterType::Triangle);
+    let small = image::imageops::resize(img, dw, dh, image::imageops::FilterType::Triangle);
     let gray = image::imageops::blur(&image::imageops::grayscale(&small), 1.2);
 
     // Paper is usually the bright region; if that yields nothing page-like,
     // retry assuming a dark page on a bright surface.
     let thr = otsu_threshold(&gray);
-    let quad = find_page_quad(&gray, thr, false).or_else(|| find_page_quad(&gray, thr, true));
-    let Some(quad) = quad else {
-        anyhow::bail!("no page detected — make sure the paper contrasts with the surface behind it");
-    };
+    let quad = find_page_quad(&gray, thr, false).or_else(|| find_page_quad(&gray, thr, true))?;
 
     // Map corners back to full resolution.
     let sx = w as f64 / dw as f64;
     let sy = h as f64 / dh as f64;
-    let src: [(f64, f64); 4] = [
+    Some([
         (quad[0].0 * sx, quad[0].1 * sy),
         (quad[1].0 * sx, quad[1].1 * sy),
         (quad[2].0 * sx, quad[2].1 * sy),
         (quad[3].0 * sx, quad[3].1 * sy),
-    ];
+    ])
+}
 
+/// Perspective-warp the (full-res) quad onto an upright rectangle whose size
+/// preserves the page's aspect, and JPEG-encode it.
+fn crop_to_quad(img: &RgbImage, src: &[(f64, f64); 4], w: u32, h: u32) -> anyhow::Result<CroppedPage> {
     // Output size: average of opposing side lengths (keeps the page's aspect).
     let dist = |a: (f64, f64), b: (f64, f64)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
     let out_w = (((dist(src[0], src[1]) + dist(src[3], src[2])) / 2.0).round() as u32).clamp(64, w.max(h));
     let out_h = (((dist(src[0], src[3]) + dist(src[1], src[2])) / 2.0).round() as u32).clamp(64, w.max(h));
 
-    let warped = warp_quad(&img, &src, out_w, out_h)?;
+    let warped = warp_quad(img, src, out_w, out_h)?;
 
     let mut buf = Vec::new();
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 92);
@@ -104,18 +131,26 @@ fn otsu_threshold(gray: &GrayImage) -> u8 {
 /// Returns None when the component doesn't look like a page.
 fn find_page_quad(gray: &GrayImage, thr: u8, inverted: bool) -> Option<[(f64, f64); 4]> {
     let (w, h) = (gray.width() as usize, gray.height() as usize);
-    let on = |x: usize, y: usize| -> bool {
-        let v = gray.get_pixel(x as u32, y as u32).0[0];
-        if inverted { v < thr } else { v >= thr }
-    };
 
-    // Largest connected component by BFS flood fill (4-connectivity).
+    // Binary mask, then a morphological close (dilate→erode, r=1) to bridge the
+    // small gaps glare, printing or compression carve out of the page region,
+    // so a single connected component covers the whole card.
+    let mut mask = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let v = gray.get_pixel(x as u32, y as u32).0[0];
+            mask[y * w + x] = if inverted { v < thr } else { v >= thr };
+        }
+    }
+    let mask = morph_close(&mask, w, h);
+
+    // Largest connected component by flood fill (4-connectivity).
     let mut seen = vec![false; w * h];
     let mut best: Vec<u32> = Vec::new(); // packed x|y<<16 — small images only
     let mut stack: Vec<(usize, usize)> = Vec::new();
     for sy in 0..h {
         for sx in 0..w {
-            if seen[sy * w + sx] || !on(sx, sy) {
+            if seen[sy * w + sx] || !mask[sy * w + sx] {
                 continue;
             }
             let mut comp: Vec<u32> = Vec::new();
@@ -123,10 +158,10 @@ fn find_page_quad(gray: &GrayImage, thr: u8, inverted: bool) -> Option<[(f64, f6
             seen[sy * w + sx] = true;
             while let Some((x, y)) = stack.pop() {
                 comp.push((x as u32) | ((y as u32) << 16));
-                if x > 0 && !seen[y * w + x - 1] && on(x - 1, y) { seen[y * w + x - 1] = true; stack.push((x - 1, y)); }
-                if x + 1 < w && !seen[y * w + x + 1] && on(x + 1, y) { seen[y * w + x + 1] = true; stack.push((x + 1, y)); }
-                if y > 0 && !seen[(y - 1) * w + x] && on(x, y - 1) { seen[(y - 1) * w + x] = true; stack.push((x, y - 1)); }
-                if y + 1 < h && !seen[(y + 1) * w + x] && on(x, y + 1) { seen[(y + 1) * w + x] = true; stack.push((x, y + 1)); }
+                if x > 0 && !seen[y * w + x - 1] && mask[y * w + x - 1] { seen[y * w + x - 1] = true; stack.push((x - 1, y)); }
+                if x + 1 < w && !seen[y * w + x + 1] && mask[y * w + x + 1] { seen[y * w + x + 1] = true; stack.push((x + 1, y)); }
+                if y > 0 && !seen[(y - 1) * w + x] && mask[(y - 1) * w + x] { seen[(y - 1) * w + x] = true; stack.push((x, y - 1)); }
+                if y + 1 < h && !seen[(y + 1) * w + x] && mask[(y + 1) * w + x] { seen[(y + 1) * w + x] = true; stack.push((x, y + 1)); }
             }
             if comp.len() > best.len() {
                 best = comp;
@@ -140,24 +175,44 @@ fn find_page_quad(gray: &GrayImage, thr: u8, inverted: bool) -> Option<[(f64, f6
         return None;
     }
 
-    // Corner heuristic: extremes of x+y and x−y pick the four corners of any
-    // roughly-rectangular blob regardless of perspective tilt.
-    let (mut tl, mut br, mut tr, mut bl) = ((0u32, 0u32), (0u32, 0u32), (0u32, 0u32), (0u32, 0u32));
-    let (mut min_s, mut max_s, mut min_d, mut max_d) = (i64::MAX, i64::MIN, i64::MAX, i64::MIN);
+    // Corner detection by farthest-point search. Unlike the old extreme-x±y
+    // heuristic (which lands on edge midpoints when the page is near
+    // axis-aligned, and on the wrong points when the blob is concave), this is
+    // the standard document-scanner approach and is robust to tilt and noise:
+    //   c1 = point farthest from the centroid,
+    //   c3 = point farthest from c1 (the opposite corner),
+    //   c2/c4 = points of greatest perpendicular distance either side of c1–c3.
+    let pt = |p: u32| ((p & 0xffff) as f64, (p >> 16) as f64);
+    let n = best.len() as f64;
+    let (mut sx, mut sy) = (0f64, 0f64);
+    for &p in &best { let (x, y) = pt(p); sx += x; sy += y; }
+    let (cx, cy) = (sx / n, sy / n);
+
+    let farthest_from = |ax: f64, ay: f64| -> (f64, f64) {
+        let mut bestp = (ax, ay);
+        let mut bestd = -1.0;
+        for &p in &best {
+            let (x, y) = pt(p);
+            let d = (x - ax).powi(2) + (y - ay).powi(2);
+            if d > bestd { bestd = d; bestp = (x, y); }
+        }
+        bestp
+    };
+    let (c1x, c1y) = farthest_from(cx, cy);
+    let (c3x, c3y) = farthest_from(c1x, c1y);
+
+    // Signed perpendicular distance of each point from the c1→c3 line.
+    let (dx, dy) = (c3x - c1x, c3y - c1y);
+    let (mut c2, mut c4) = ((c1x, c1y), (c1x, c1y));
+    let (mut max_pos, mut max_neg) = (0f64, 0f64);
     for &p in &best {
-        let x = (p & 0xffff) as i64;
-        let y = (p >> 16) as i64;
-        if x + y < min_s { min_s = x + y; tl = (x as u32, y as u32); }
-        if x + y > max_s { max_s = x + y; br = (x as u32, y as u32); }
-        if x - y > max_d { max_d = x - y; tr = (x as u32, y as u32); }
-        if x - y < min_d { min_d = x - y; bl = (x as u32, y as u32); }
+        let (x, y) = pt(p);
+        let cross = dx * (y - c1y) - dy * (x - c1x);
+        if cross > max_pos { max_pos = cross; c2 = (x, y); }
+        if cross < max_neg { max_neg = cross; c4 = (x, y); }
     }
-    let quad = [
-        (tl.0 as f64, tl.1 as f64),
-        (tr.0 as f64, tr.1 as f64),
-        (br.0 as f64, br.1 as f64),
-        (bl.0 as f64, bl.1 as f64),
-    ];
+
+    let quad = order_quad([(c1x, c1y), c2, (c3x, c3y), c4]);
 
     // The quad (not just the blob) must be a sensible part of the frame.
     let qarea = shoelace(&quad);
@@ -175,6 +230,63 @@ fn find_page_quad(gray: &GrayImage, thr: u8, inverted: bool) -> Option<[(f64, f6
         }
     }
     Some(quad)
+}
+
+/// Morphological close (dilate then erode, 3×3 / radius 1). Out-of-bounds
+/// neighbours count as "set" during erosion so a page touching the frame edge
+/// isn't eaten away.
+fn morph_close(mask: &[bool], w: usize, h: usize) -> Vec<bool> {
+    let mut dil = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut v = false;
+            'd: for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 && mask[ny as usize * w + nx as usize] {
+                        v = true;
+                        break 'd;
+                    }
+                }
+            }
+            dil[y * w + x] = v;
+        }
+    }
+    let mut er = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut v = true;
+            'e: for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 && !dil[ny as usize * w + nx as usize] {
+                        v = false;
+                        break 'e;
+                    }
+                }
+            }
+            er[y * w + x] = v;
+        }
+    }
+    er
+}
+
+/// Order four points as TL, TR, BR, BL. Sorts clockwise by angle about the
+/// centroid (image y points down, so increasing atan2 is clockwise), then
+/// rotates the cycle to start at the top-left-most point (min x+y).
+fn order_quad(p: [(f64, f64); 4]) -> [(f64, f64); 4] {
+    let cx = (p[0].0 + p[1].0 + p[2].0 + p[3].0) / 4.0;
+    let cy = (p[0].1 + p[1].1 + p[2].1 + p[3].1) / 4.0;
+    let mut s = p;
+    s.sort_by(|a, b| (a.1 - cy).atan2(a.0 - cx).partial_cmp(&(b.1 - cy).atan2(b.0 - cx)).unwrap());
+    let mut start = 0;
+    let mut best = f64::MAX;
+    for (i, q) in s.iter().enumerate() {
+        if q.0 + q.1 < best { best = q.0 + q.1; start = i; }
+    }
+    [s[start], s[(start + 1) % 4], s[(start + 2) % 4], s[(start + 3) % 4]]
 }
 
 fn shoelace(q: &[(f64, f64); 4]) -> f64 {

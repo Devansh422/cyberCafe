@@ -135,23 +135,28 @@ pub fn apply_preset_pixels(canvas: RgbImage, p: &Preset) -> RgbImage {
 
 // ── High-contrast document-scan pipeline ─────────────────────────────────────
 //
-// Produces a clean "scanned document" look: crisp dark text on a bright, even,
-// near-white background — NOT a 1-bit monotone threshold. Grayscale tonality is
-// preserved so text edges stay smooth and the result reads naturally.
+// Produces a clean "scanned document" look — crisp dark text on a bright, even,
+// pure-white background — that prints sharply and economically (the background
+// is forced to true white so a printer lays down no ink there). It is *tonal*,
+// not a 1-bit threshold: text edges keep their grayscale anti-aliasing so the
+// result reads naturally instead of jagged.
 //
-// Pipeline:
+// Reliability across document types (printed text, faint pencil, receipts,
+// colour forms, IDs, well-lit or shadowed photos) comes from making every stage
+// adapt to the image rather than using fixed constants:
 //   1. Grayscale (ITU-R BT.709 luma weights).
-//   2. Background (illumination) estimate — a local maximum followed by a wide
-//      box blur. The max-filter samples the paper brightness while ignoring the
-//      darker text/marks; the blur turns it into a smooth, slowly-varying
-//      lighting field.
+//   2. Illumination estimate — a local maximum (samples the paper level *through*
+//      the text) then a wide blur, giving a smooth, slowly-varying lighting field.
 //   3. Flat-field normalisation — divide each pixel by its local background
-//      (`pixel / bg × 255`). This cancels shadows and uneven lighting, pushing
-//      the paper to a uniform near-white regardless of how the photo was lit.
-//   4. Tone curve — black/white-point levels stretch plus a mild gamma that
-//      deepens the text without crushing the edge anti-aliasing (so it never
-//      becomes a harsh monotone bitmap).
-//   5. Unsharp mask — crisps up the text strokes for a sharp scanned feel.
+//      (`pixel / bg × 255`), cancelling shadows/uneven lighting so the paper is
+//      uniform regardless of how the photo was lit.
+//   4. Auto tone mapping — the reliability core. The paper tone is estimated as
+//      the dominant bright mode and the ink floor as a low percentile; the curve
+//      stretches [black_pt, white_pt] → [0,255] with a white knee just below the
+//      paper tone (so paper and brighter clip to clean white) and a mild gamma
+//      that deepens text. A minimum-span guard stops near-blank pages from being
+//      amplified into speckle.
+//   5. Unsharp mask — crisps the strokes for a sharp, printer-friendly edge.
 
 /// Full document-scan pipeline. Called when `Preset.doc_scan` is true.
 pub fn apply_high_contrast(src: RgbImage) -> RgbImage {
@@ -166,36 +171,73 @@ pub fn apply_high_contrast(src: RgbImage) -> RgbImage {
         .pixels()
         .map(|p| {
             let [r, g, b] = p.0;
-            (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) as u8
+            clamp_u8(0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32)
         })
         .collect();
 
     // 2. Background illumination estimate: local max (samples paper level while
     //    ignoring dark text) then a wide blur to smooth it into a lighting field.
+    //    Radii scale with the image so the same physical neighbourhood is used at
+    //    any resolution.
     let min_dim = w.min(h);
-    let r_max = (min_dim / 20).clamp(8, 35);
-    let r_blur = (min_dim / 12).clamp(12, 60);
+    let r_max = (min_dim / 20).clamp(10, 60);
+    let r_blur = (min_dim / 8).clamp(24, 160);
     let lifted = separable_max(&gray, w, h, r_max);
     let bg = separable_blur(&lifted, w, h, r_blur);
 
-    // 3. Flat-field normalise + 4. tone curve (levels + gamma).
-    //    LO/HI are the black/white points after normalisation; GAMMA > 1 deepens
-    //    the text while leaving the (already ~white) background untouched.
-    const LO: f32 = 25.0;
-    const HI: f32 = 200.0;
-    const GAMMA: f32 = 1.5;
-    let span = HI - LO;
-    let mut out = vec![0u8; w * h];
+    // 3. Flat-field normalise (divide by local background) and histogram the
+    //    result in one pass. After this, paper sits near 255 everywhere.
+    let mut flat = vec![0u8; w * h];
+    let mut hist = [0u32; 256];
     for i in 0..w * h {
         let bg_v = (bg[i] as f32).max(1.0);
-        let flat = (gray[i] as f32 / bg_v * 255.0).min(255.0);
-        let t = ((flat - LO) / span).clamp(0.0, 1.0).powf(GAMMA);
-        out[i] = (t * 255.0) as u8;
+        let f = (gray[i] as f32 / bg_v * 255.0).min(255.0) as u8;
+        flat[i] = f;
+        hist[f as usize] += 1;
     }
 
-    // 5. Unsharp mask for crisp text edges (mild — avoids ringing halos).
+    // 4. Auto tone mapping. Estimate paper (dominant bright mode) and the ink
+    //    floor (2nd percentile), then build a 256-entry LUT that stretches
+    //    [black_pt, white_pt] → [0,255] with a mild gamma.
+    let total = (w * h) as u32;
+    let paper = (128..=255).max_by_key(|&v| hist[v]).unwrap_or(245) as f32;
+    let bp_pct = percentile(&hist, total, 0.02) as f32;
+    // White point just below the paper tone → paper & brighter become pure white.
+    let white_pt = (paper * 0.94).clamp(60.0, 255.0);
+    // Keep a minimum tonal span so near-blank pages aren't stretched into speckle.
+    const MIN_SPAN: f32 = 110.0;
+    let black_pt = bp_pct.min(white_pt - MIN_SPAN).max(0.0);
+    let span = (white_pt - black_pt).max(1.0);
+    const GAMMA: f32 = 1.30; // deepen text without crushing edge anti-aliasing
+
+    let mut lut = [0u8; 256];
+    for (v, o) in lut.iter_mut().enumerate() {
+        let t = (((v as f32) - black_pt) / span).clamp(0.0, 1.0).powf(GAMMA);
+        *o = (t * 255.0) as u8;
+    }
+    let mut out = vec![0u8; w * h];
+    for (o, &f) in out.iter_mut().zip(flat.iter()) {
+        *o = lut[f as usize];
+    }
+
+    // 5. Unsharp mask for crisp, printer-friendly text edges. The threshold (3)
+    //    keeps it from amplifying faint paper noise into the clean background.
     let rgb = gray_to_rgb(&out, w as u32, h as u32);
-    image::imageops::unsharpen(&rgb, 0.8, 2)
+    image::imageops::unsharpen(&rgb, 1.0, 3)
+}
+
+/// Smallest tone value `v` whose cumulative histogram count reaches `frac` of
+/// `total` — a percentile over a 256-bin luma histogram.
+fn percentile(hist: &[u32; 256], total: u32, frac: f32) -> u8 {
+    let target = (total as f32 * frac) as u32;
+    let mut acc = 0u32;
+    for (v, &c) in hist.iter().enumerate() {
+        acc += c;
+        if acc >= target {
+            return v as u8;
+        }
+    }
+    255
 }
 
 /// Separable sliding-window maximum with a square `(2r+1)` window. O(w·h):
@@ -395,4 +437,105 @@ pub fn render_image_to_a4_pdf(bytes: &[u8], p: &Preset) -> anyhow::Result<Vec<u8
         .write_to(&mut buf, image::ImageFormat::Jpeg)
         .map_err(|e| anyhow::anyhow!("jpeg encode failed: {}", e))?;
     crate::pdf::jpeg_page(&buf.into_inner(), A4_W, A4_H, A4_PT_W, A4_PT_H, &[])
+}
+
+#[cfg(test)]
+mod hc_tests {
+    use super::*;
+
+    /// Build an RGB test image from a per-pixel gray closure.
+    fn gray_img(w: u32, h: u32, f: impl Fn(u32, u32) -> u8) -> RgbImage {
+        let mut img = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let v = f(x, y);
+                img.put_pixel(x, y, Rgb([v, v, v]));
+            }
+        }
+        img
+    }
+
+    /// Mean luma over a rectangle (clamped to the image).
+    fn mean(img: &RgbImage, x0: u32, y0: u32, x1: u32, y1: u32) -> f32 {
+        let mut s = 0u64;
+        let mut n = 0u64;
+        for y in y0..y1.min(img.height()) {
+            for x in x0..x1.min(img.width()) {
+                s += img.get_pixel(x, y).0[0] as u64;
+                n += 1;
+            }
+        }
+        s as f32 / n.max(1) as f32
+    }
+
+    // "Ink" is a fixed fraction of the *local* paper brightness (paper reflects
+    // light, ink absorbs it) — the multiplicative model flat-fielding cancels.
+    fn is_text_row(y: u32) -> bool {
+        y >= 40 && y < 360 && ((y - 40) % 40) < 8 // 8px bars every 40px
+    }
+
+    // A page lit by a strong left→right brightness gradient (shadow) must come
+    // out with a clean, uniform white background and dark text everywhere —
+    // proving the flat-field stage removes uneven lighting.
+    #[test]
+    fn shadowed_page_flattens_to_white_with_dark_text() {
+        let out = apply_high_contrast(gray_img(400, 400, |x, y| {
+            let paper = 255.0 - (x as f32) * 120.0 / 400.0; // 255 (left) → 135 (right)
+            if is_text_row(y) && (50..350).contains(&x) {
+                (paper * 0.2) as u8
+            } else {
+                paper as u8
+            }
+        }));
+
+        // Paper between text rows — bright & even on BOTH the lit and shadowed side.
+        let paper_left = mean(&out, 60, 110, 120, 118);
+        let paper_right = mean(&out, 280, 110, 340, 118);
+        assert!(paper_left > 245.0, "left paper {paper_left}");
+        assert!(paper_right > 245.0, "right (shadowed) paper {paper_right}");
+        assert!((paper_left - paper_right).abs() < 8.0, "lighting not flattened: {paper_left} vs {paper_right}");
+
+        // Text on the shadowed side must still be dark (bar spans y 120..128).
+        let text_right = mean(&out, 280, 122, 340, 126);
+        assert!(text_right < 70.0, "shadowed text not dark: {text_right}");
+    }
+
+    // Gray-on-gray (low contrast original) must be pushed apart: background to
+    // white, ink clearly darker. Proves the auto black/white points adapt.
+    #[test]
+    fn low_contrast_doc_is_separated() {
+        let out = apply_high_contrast(gray_img(300, 300, |x, y| {
+            if is_text_row(y) && (50..250).contains(&x) { 150 } else { 210 }
+        }));
+        let paper = mean(&out, 60, 110, 240, 118);
+        let ink = mean(&out, 60, 122, 240, 126);
+        assert!(paper > 240.0, "paper not whitened: {paper}");
+        assert!(paper - ink > 90.0, "low-contrast not separated: paper {paper} ink {ink}");
+    }
+
+    // A near-blank, slightly noisy page must stay clean white — no speckle (which
+    // would waste toner). Proves the minimum-span guard.
+    #[test]
+    fn blank_noisy_page_stays_clean() {
+        let out = apply_high_contrast(gray_img(300, 300, |x, y| {
+            248u8.saturating_sub(((x ^ y) % 7) as u8) // 242..248 deterministic noise
+        }));
+        let m = mean(&out, 20, 20, 280, 280);
+        assert!(m > 246.0, "blank page not white: {m}");
+        let dark = out.pixels().filter(|p| p.0[0] < 200).count();
+        let frac = dark as f32 / (out.width() * out.height()) as f32;
+        assert!(frac < 0.01, "speckle on blank page: {:.4} dark", frac);
+    }
+
+    // Plain black text on white: text near-black, background pure white.
+    #[test]
+    fn dark_text_on_white() {
+        let out = apply_high_contrast(gray_img(300, 300, |x, y| {
+            if is_text_row(y) && (50..250).contains(&x) { 20 } else { 255 }
+        }));
+        let paper = mean(&out, 60, 110, 240, 118);
+        let ink = mean(&out, 60, 122, 240, 126);
+        assert!(paper > 250.0, "paper {paper}");
+        assert!(ink < 45.0, "ink {ink}");
+    }
 }
