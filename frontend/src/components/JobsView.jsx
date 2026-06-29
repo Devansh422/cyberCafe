@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import useSWR from 'swr';
-import { Trash2, Layers, Images } from 'lucide-react';
+import { Trash2, Layers, Images, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
 import { SectionHeader } from './SectionHeader';
 import { TaskCard } from './TaskCard';
@@ -41,7 +41,14 @@ function buildList(jobs, groupBatches) {
 
 export function JobsView({ status, title, subtitle, showAdd = true, showHeader = true }) {
   const key = status ? `/jobs?status=${status}` : '/jobs';
-  const { data, mutate } = useSWR(key, api.fetcher, { refreshInterval: 3000 });
+  // Poll every 3s, and keep polling even when the window is hidden/offline so a
+  // kiosk machine still surfaces newly-arrived WhatsApp files without a manual
+  // nudge. The Refresh button below forces an immediate revalidation on demand.
+  const { data, mutate, isValidating } = useSWR(key, api.fetcher, {
+    refreshInterval: 3000,
+    refreshWhenHidden: true,
+    refreshWhenOffline: true,
+  });
   const [selectedId, setSelectedId] = useState(null);
   const [uploadKey] = useState(0);
   const [clearing, setClearing] = useState(false);
@@ -122,8 +129,26 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
   const hasUpload = !showHeader && showAdd;
   const hasCreateBatch = status === 'processed' && jobs.length >= 2;
   const hasCollage = jobs.filter((j) => j.type === 'image').length >= 2;
-  const listActions = (hasClear || hasUpload || hasCreateBatch || hasCollage) ? (
+  // The Refresh button is always shown so the operator can force-pull newly
+  // arrived WhatsApp files at any time (belt-and-braces over the 3s auto-poll).
+  const listActions = (
     <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => mutate()}
+        disabled={isValidating}
+        title="Check for new files now"
+        className="flex items-center gap-1.5 text-xs font-semibold rounded-pill"
+        style={{
+          padding: '5px 12px',
+          background: 'var(--color-bg-overlay)',
+          color: 'var(--color-text-primary)',
+          border: '1px solid var(--color-border)',
+          cursor: isValidating ? 'wait' : 'pointer',
+        }}
+      >
+        <RefreshCw size={13} className={isValidating ? 'lucide-spin' : undefined} /> Refresh
+      </button>
       {hasCollage && (
         <button
           type="button"
@@ -176,7 +201,7 @@ export function JobsView({ status, title, subtitle, showAdd = true, showHeader =
       )}
       {hasUpload && <UploadDialog key={uploadKey} onDone={() => mutate()} />}
     </div>
-  ) : undefined;
+  );
 
   return (
     <div className="flex flex-col gap-4" style={{ height: '100%', minHeight: 0 }}>

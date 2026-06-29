@@ -16,6 +16,7 @@
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const dns = require('dns');
 const { execFile, execFileSync } = require('child_process');
 
 const WA_PORT = parseInt(process.env.WA_PORT || '5099', 10);
@@ -56,14 +57,87 @@ function withTimeout(promise, ms, label = 'op') {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// ---- robust localhost transport ------------------------------------------------
+//
+// The sidecar talks to the Rust core over localhost. It deliberately uses ONLY
+// Node's built-in `http` module rather than the global `fetch`/`FormData`/`Blob`
+// (undici): those are unreliable inside the pkg-bundled single-file .exe, where a
+// broken multipart encoder silently drops every media import. Built-ins always
+// work, so imports are reliable in dev AND in the packaged app.
+
+// POST to the core. `opts.json` sends a JSON body; `opts.multipart` sends a
+// multipart/form-data body. Resolves on a 2xx (with the response text), rejects
+// otherwise so callers can retry.
+function postCore(pathname, opts = {}) {
+  return new Promise((resolve, reject) => {
+    let target;
+    try { target = new URL(pathname, CORE_URL); } catch (e) { return reject(e); }
+
+    const headers = {};
+    let body = null;
+    if (opts.json !== undefined) {
+      body = Buffer.from(JSON.stringify(opts.json));
+      headers['Content-Type'] = 'application/json';
+    } else if (opts.multipart) {
+      const boundary = '----RatanBoundary' + Math.random().toString(16).slice(2) + Date.now().toString(16);
+      body = buildMultipart(boundary, opts.multipart.fields, opts.multipart.file);
+      headers['Content-Type'] = `multipart/form-data; boundary=${boundary}`;
+    }
+    if (body) headers['Content-Length'] = body.length;
+
+    const req = http.request(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || 80,
+        path: target.pathname + target.search,
+        method: 'POST',
+        headers,
+        timeout: opts.timeoutMs || 30000,
+      },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve({ status: res.statusCode, body: data });
+          else reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+        });
+      },
+    );
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('request timed out')));
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+// Build a multipart/form-data body as a Buffer (text fields + one binary file).
+function buildMultipart(boundary, fields, file) {
+  const CRLF = '\r\n';
+  const parts = [];
+  for (const [name, value] of Object.entries(fields || {})) {
+    if (value === undefined || value === null) continue;
+    parts.push(Buffer.from(`--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${value}${CRLF}`, 'utf8'));
+  }
+  if (file && file.buffer) {
+    const safe = String(file.filename || 'file.bin').replace(/["\r\n]/g, '');
+    parts.push(Buffer.from(
+      `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${safe}"${CRLF}` +
+      `Content-Type: ${file.contentType || 'application/octet-stream'}${CRLF}${CRLF}`, 'utf8'));
+    parts.push(file.buffer);
+    parts.push(Buffer.from(CRLF, 'utf8'));
+  }
+  parts.push(Buffer.from(`--${boundary}--${CRLF}`, 'utf8'));
+  return Buffer.concat(parts);
+}
+
 async function pushState() {
   const qrAge = state.qrGeneratedAt ? Math.floor((Date.now() - state.qrGeneratedAt) / 1000) : null;
-  const body = JSON.stringify({ status: state.status, qr: state.qr, qrAge, lastError: state.lastError });
   try {
-    await fetch(`${CORE_URL}/api/system/whatsapp/state`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
+    await postCore('/api/system/whatsapp/state', {
+      json: { status: state.status, qr: state.qr, qrAge, lastError: state.lastError },
+      timeoutMs: 8000,
     });
   } catch (e) {
     // Core may not be up yet — non-fatal.
@@ -146,13 +220,21 @@ async function teardownBrowser(destroy) {
 
 async function importMedia(buffer, meta) {
   try {
-    const fd = new FormData();
-    fd.append('file', new Blob([buffer]), meta.originalName || 'file.bin');
-    if (meta.mimeType) fd.append('mimeType', meta.mimeType);
-    if (meta.customerName) fd.append('customerName', meta.customerName);
-    if (meta.customerPhone) fd.append('customerPhone', meta.customerPhone);
-    const res = await fetch(`${CORE_URL}/api/system/whatsapp/import`, { method: 'POST', body: fd });
-    if (!res.ok) throw new Error(`core import ${res.status}`);
+    const res = await postCore('/api/system/whatsapp/import', {
+      multipart: {
+        fields: { mimeType: meta.mimeType, customerName: meta.customerName, customerPhone: meta.customerPhone },
+        file: { filename: meta.originalName || 'file.bin', contentType: meta.mimeType, buffer },
+      },
+      timeoutMs: 60000,
+    });
+    // The core answers 2xx with {ok:false, reason} for duplicates / unsupported
+    // types — those are terminal (not transient failures), so don't retry them.
+    try {
+      const parsed = JSON.parse(res.body || '{}');
+      if (parsed && parsed.ok === false && parsed.reason && parsed.reason !== 'duplicate') {
+        log(`core skipped import (${parsed.reason})`);
+      }
+    } catch { /* non-JSON 2xx body — treat as success */ }
     return true;
   } catch (e) {
     log('import POST failed:', e.message);
@@ -216,14 +298,25 @@ function clearSession() {
 
 // Best-effort connectivity probe. Avoids churning Chromium launch/kill cycles
 // while we're offline — we only attempt a (re)connect once the internet is back.
-async function isOnline() {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4000);
-    await fetch('https://web.whatsapp.com/', { method: 'HEAD', signal: ctrl.signal, cache: 'no-store' });
-    clearTimeout(t);
-    return true;
-  } catch { return false; }
+// Uses a DNS lookup (built-in, no fetch dependency): it fails fast when offline
+// and resolves when connectivity is back. On any probe error we assume online so
+// a flaky probe never permanently blocks reconnection.
+function isOnline() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const t = setTimeout(() => done(true), 4000);
+    if (t.unref) t.unref();
+    try {
+      dns.resolve('web.whatsapp.com', (err, addrs) => {
+        clearTimeout(t);
+        done(!err && Array.isArray(addrs) && addrs.length > 0);
+      });
+    } catch {
+      clearTimeout(t);
+      done(true);
+    }
+  });
 }
 
 // True once WhatsApp has been linked at least once (the LocalAuth profile
@@ -557,6 +650,12 @@ process.on('SIGINT', () => { shutdown(0); });
 process.on('SIGTERM', () => { shutdown(0); });
 // Last-ditch synchronous cleanup if the process is exiting for any other reason.
 process.on('exit', () => { killTree(browserPid); });
+
+// Re-announce state to the core periodically. If a push is ever missed (core
+// restarting, transient error), the dashboard self-heals to the true status
+// within one interval instead of showing stale info — robust under any timing.
+const heartbeat = setInterval(() => { pushState(); }, 20000);
+if (heartbeat.unref) heartbeat.unref();
 
 server.listen(WA_PORT, '127.0.0.1', () => {
   log(`listening on http://127.0.0.1:${WA_PORT}  (core=${CORE_URL}, session=${SESSION_DIR})`);
