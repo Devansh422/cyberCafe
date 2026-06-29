@@ -50,48 +50,79 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 }
 
 /// Ensure the externalized runtime components are present (downloading them on
-/// first run / after a component bump), then start WhatsApp. Runs on a background
+/// first run / after a component bump) and start WhatsApp. Runs on a background
 /// task so the API is available immediately and the UI can show download
 /// progress via `/api/system/components`. In dev (`RATAN_COMPONENTS_DIR` unset)
 /// there's nothing to fetch and it goes straight to starting WhatsApp.
 ///
-/// Per-file `.sha256` markers let us determine which components need work before
-/// touching any large file. Only components whose marker is absent or stale are
-/// shown in the progress UI — on a post-update boot where only the sidecar
-/// changed, the UI shows just the sidecar's size, not the full 229 MB.
+/// The work is split so the app feels fast and WhatsApp is robust:
+///   * **Essential components** (ONNX models, SumatraPDF) gate the UI via the
+///     setup screen. Per-file `.sha256` markers mean only the specs whose marker
+///     is absent/stale are fetched — so on a post-update boot these are usually
+///     all present and the app opens with no setup screen at all.
+///   * **The WhatsApp sidecar** is rebuilt every release, so its hash changes on
+///     every update. It is therefore fetched *in the background* and never gates
+///     the UI; WhatsApp starts the moment its sidecar is present — independent of
+///     (and never blocked or aborted by) the heavy model downloads.
 pub fn spawn_bootstrap(state: SharedState) {
     tokio::spawn(async move {
-        if let Some(dir) = state.config.components_dir.clone() {
-            let specs = components::manifest();
+        let Some(dir) = state.config.components_dir.clone() else {
+            // Dev run — nothing to fetch.
+            state.components.set_ready();
+            start_whatsapp(&state).await;
+            return;
+        };
 
-            // Quick pre-check using tiny per-file markers — never reads large files.
-            // Only the specs whose marker is absent or stale need verification or download.
-            let needs_work = components::specs_needing_work(&dir, &specs);
+        let specs = components::manifest();
+        let needs_work = components::specs_needing_work(&dir, &specs);
 
-            if needs_work.is_empty() {
-                // All markers valid → ready immediately; the setup UI never shows.
-                state.components.set_ready();
-            } else {
-                // Reset the progress state with ONLY the specs that need work so
-                // the UI total shows (e.g.) "7 MB" not "229 MB" after a patch update.
-                state.components.reset(&needs_work);
-                match components::ensure_all(&dir, &specs, &state.components).await {
-                    Ok(()) => state.components.set_ready(),
-                    Err(e) => {
-                        tracing::error!("[components] download failed: {e}");
-                        state.components.set_error(e.to_string());
-                        return; // leave WhatsApp/passport gated; the UI offers a retry
-                    }
+        // Split off the WhatsApp sidecar (matched by its destination filename) so
+        // it doesn't sit behind the model downloads in the UI-gating phase.
+        let sidecar_file = state
+            .config
+            .sidecar_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().into_owned());
+        let (wa_work, rest_work): (Vec<_>, Vec<_>) = needs_work
+            .into_iter()
+            .partition(|s| Some(s.file.as_str()) == sidecar_file.as_deref());
+
+        // Phase 1: essential components gate the UI. When `rest_work` is empty
+        // (the common case on an update where only the sidecar changed), this is
+        // ready instantly and the setup screen never appears.
+        if rest_work.is_empty() {
+            state.components.set_ready();
+        } else {
+            state.components.reset(&rest_work);
+            match components::ensure_all(&dir, &rest_work, &state.components).await {
+                Ok(()) => state.components.set_ready(),
+                Err(e) => {
+                    // The UI shows a retry screen, but WhatsApp is independent of
+                    // these, so we still bring it up below.
+                    tracing::error!("[components] download failed: {e}");
+                    state.components.set_error(e.to_string());
                 }
             }
-        } else {
-            state.components.set_ready();
         }
 
-        if state.config.whatsapp_enabled {
-            if let Err(e) = state.whatsapp.start().await {
-                tracing::warn!("[whatsapp] start error: {e}");
+        // Phase 2: WhatsApp sidecar in the background, then start WhatsApp as soon
+        // as it's present. Progress for it is intentionally not shown (the gate is
+        // already past), so a rebuilt-sidecar re-download never blocks the app.
+        if !wa_work.is_empty() {
+            if let Err(e) = components::ensure_all(&dir, &wa_work, &state.components).await {
+                tracing::error!("[components] WhatsApp sidecar fetch failed: {e}");
             }
         }
+        start_whatsapp(&state).await;
     });
+}
+
+/// Start the WhatsApp client (no-op when WhatsApp is disabled).
+async fn start_whatsapp(state: &SharedState) {
+    if state.config.whatsapp_enabled {
+        if let Err(e) = state.whatsapp.start().await {
+            tracing::warn!("[whatsapp] start error: {e}");
+        }
+    }
 }
